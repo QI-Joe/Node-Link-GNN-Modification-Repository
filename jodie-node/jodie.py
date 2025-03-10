@@ -70,19 +70,19 @@ graph, idxloader = data_load(dataset=args.network)
 graph_dataloader = Temporal_Splitting(graph=graph, dynamic=True, idxloader=idxloader).temporal_splitting(time_mode="view", snapshot = args.snapshot, views = args.snapshot-2)
 temporaloader = Dynamic_Dataloader(data = graph_dataloader, graph=graph)
 
-num_features = graph.pos.shape[1]
+num_features = graph.pos[0].shape[1]
 
 model = JODIE(args, num_features).cuda()
 
 for snapshot in range(args.snapshot):
     data = temporaloader.get_temporal()
-    data = to_cuda(data)
+    # data = to_cuda(data)
     num_users = data.src_num
     num_items = data.dest_num
 
     num_interactions = data.num_edges
-    unique_y, y_freq = data.y.unique(sorted=True, return_counts=True)
-    y_distro = [y_freq[i].item() / data.y.size[0] for i in range(y_freq.shape[0])]
+    unique_y, y_freq = np.unique(data.y, return_counts=True)
+    y_distro = [y_freq[i] / data.y.shape[0] for i in range(y_freq.shape[0])]
     y_distro_cuda = torch.tensor(y_distro, dtype=torch.float16).to(device)
     crossEntropyLoss = nn.CrossEntropyLoss(weight=y_distro_cuda)
     MSELoss = nn.MSELoss()
@@ -98,13 +98,17 @@ for snapshot in range(args.snapshot):
 
 
     # INITIALIZE EMBEDDING
-    initial_user_embedding = nn.Parameter(F.normalize(torch.rand(args.embedding_dim).cuda(), dim=0)) # the initial user and item embeddings are learned during training as well
-    initial_item_embedding = nn.Parameter(F.normalize(torch.rand(args.embedding_dim).cuda(), dim=0))
-    model.initial_user_embedding = initial_user_embedding
-    model.initial_item_embedding = initial_item_embedding
+    # initial_user_embedding = nn.Parameter(F.normalize(torch.rand(args.embedding_dim).cuda(), dim=0)) # the initial user and item embeddings are learned during training as well
+    # initial_item_embedding = nn.Parameter(F.normalize(torch.rand(args.embedding_dim).cuda(), dim=0))
+    # model.initial_user_embedding = initial_user_embedding
+    # model.initial_item_embedding = initial_item_embedding
 
-    user_embeddings = initial_user_embedding.repeat(num_users, 1) # initialize all users to the same embedding 
-    item_embeddings = initial_item_embedding.repeat(num_items, 1) # initialize all items to the same embedding
+    # user_embeddings = initial_user_embedding.repeat(num_users, 1) # initialize all users to the same embedding 
+    # item_embeddings = initial_item_embedding.repeat(num_items, 1) # initialize all items to the same embedding
+
+    user_embeddings = data.node_pos
+    item_embeddings = data.node_pos
+
     item_embedding_static = Variable(torch.eye(num_items).cuda()) # one-hot vectors for static embeddings
     user_embedding_static = Variable(torch.eye(num_users).cuda()) # one-hot vectors for static embeddings 
 
@@ -112,9 +116,9 @@ for snapshot in range(args.snapshot):
     learning_rate = 1e-3
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
-    user_sequence_id = data.edge_index[0, :].clone()
-    item_sequence_id = data.edge_index[1, :].clone()
-    feature_sequence = data.general_pos
+    user_sequence_id = np.copy(data.edge_index[0, :])
+    item_sequence_id = np.copy(data.edge_index[1, :])
+    feature_sequence = data.edge_pos
     user_timediffs_sequence = data.src_timedifference_sequence
     item_timediffs_sequence = data.dest_timedifference_sequence
     user_previous_itemid_sequence = data.src_previous_destid_sequence
@@ -291,8 +295,8 @@ for snapshot in range(args.snapshot):
             # SAVE CURRENT MODEL TO DISK TO BE USED IN EVALUATION.
             # save_model(model, optimizer, args, ep, user_embeddings_dystat, item_embeddings_dystat, train_end_idx, user_embeddings_timeseries, item_embeddings_timeseries)
 
-            user_embeddings = initial_user_embedding.repeat(num_users, 1)
-            item_embeddings = initial_item_embedding.repeat(num_items, 1)
+            # user_embeddings = model.initial_user_embedding
+            # item_embeddings = model.initial_item_embedding
 
 # 别save model了，直接开测，node prediction任务测试比link prediction更直接一些
 

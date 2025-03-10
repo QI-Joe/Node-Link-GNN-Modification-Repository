@@ -140,7 +140,7 @@ class Temporal_Dataloader(Data):
         self.kept_train_mask = None
         self.kept_val_mask = None
 
-        self.pos, self.edge_pos = pos
+        self.node_pos, self.edge_pos = pos
         self.general_pos = None
         self.my_n_id = NodeIdxMatching(False, nodes=self.x, label=self.y)
         self.idx2node = self.my_n_id.node
@@ -425,7 +425,7 @@ class Temporal_Splitting(object):
                 labels[mask] = values
         return labels
 
-    def edge_special_generating(self, graph: Union[Data | Temporal_Dataloader]):
+    def edge_special_generating(self, graph: Union[Data | Temporal_Dataloader], temporal_idx: int):
         numpy_edges = graph.edge_index.numpy() if isinstance(graph.edge_index, Tensor) else graph.edge_index
         time_series = graph.edge_attr.numpy() if isinstance(graph.edge_attr, Tensor) else graph.edge_attr
         
@@ -461,7 +461,7 @@ class Temporal_Splitting(object):
         user_time_diiference_sequence = scale(np.array(user_time_diiference_sequence) + 1)
         item_timedifference_sequence = scale(np.array(item_timedifference_sequence) + 1)
 
-        print("*** Network loading completed ***\n\n")
+        print(f"*** Network {temporal_idx} loading completed ***\n\n")
         """
         not on GPU first, may need to convert back to numpy for calculation first
         """
@@ -512,14 +512,15 @@ class Temporal_Splitting(object):
             sampled_nodes = torch.unique(sampled_edges) # orignal/gobal node index
 
             y = self.n_id.get_label_by_node(sampled_nodes)
+            y = np.array(y)
             nodepos, edgepos = pos
-            subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos)
+            subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos[sample_time])
 
             temporal_subgraph = Temporal_Dataloader(nodes=sampled_nodes, edge_index=sampled_edges, \
                 edge_attr=edge_attr[sample_time], y=y, pos=subpos).get_Temporalgraph()
             
             # JODIE Data format fitting and y from node-id to edge-id
-            temporal_subgraph = self.edge_special_generating(graph = temporal_subgraph)
+            temporal_subgraph = self.edge_special_generating(graph = temporal_subgraph, temporal_idx=idx)
             temporal_subgraph.y = temporal_subgraph.y[temporal_subgraph.edge_index[0]]
             
             temporal_subgraphs.append(temporal_subgraph)
@@ -731,7 +732,7 @@ def data_load(dataset: str, dynamic: bool = False, for_test:bool=False, **wargs)
     raise ValueError("Dataset not found")
 
     
-def to_cuda(graph: Union[Data, Temporal_Dataloader], feature_type:str, device:str = "cuda:0"):
+def to_cuda(graph: Union[Data, Temporal_Dataloader], device:str = "cuda:0"):
     device = torch.device(device)
     if not isinstance(graph.x, torch.Tensor):
         graph.x = torch.tensor(graph.x).to(device)
@@ -742,10 +743,8 @@ def to_cuda(graph: Union[Data, Temporal_Dataloader], feature_type:str, device:st
     if not isinstance(graph.y, torch.Tensor) or graph.y.device != device:
         graph.y = torch.tensor(graph.y).to(device)
     
-    if feature_type == "node":
-        graph.general_pos = graph.pos.to(device)
-    else:
-        graph.general_pos = graph.edge_pos.to(device)
+    graph.general_pos = graph.node_pos.to(device)
+    graph.general_pos = graph.edge_pos.to(device)
 
     return graph
 
