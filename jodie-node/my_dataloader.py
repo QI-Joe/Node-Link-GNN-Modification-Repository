@@ -457,11 +457,9 @@ class Temporal_Splitting(object):
             user_previsou_itemid_sequence.append(user_latest_itemid[user])
             user_latest_itemid[user]=dest[idx]
     
-        print("Scaling timestamps")
         user_time_diiference_sequence = scale(np.array(user_time_diiference_sequence) + 1)
         item_timedifference_sequence = scale(np.array(item_timedifference_sequence) + 1)
 
-        print(f"*** Network {temporal_idx} loading completed ***\n\n")
         """
         not on GPU first, may need to convert back to numpy for calculation first
         """
@@ -539,7 +537,7 @@ def label_match(labels: list):
             outer_ptr += 1
     return combination
 
-def time_encoding(timestamp: torch.Tensor, emb_size: int = 128):
+def time_encoding(timestamp: torch.Tensor, emb_size: int = 64):
     
     timestamps = torch.tensor(timestamp, dtype=torch.float32).unsqueeze(1)
     max_time = timestamps.max() if timestamps.numel() > 0 else 1.0  # Avoid division by zero

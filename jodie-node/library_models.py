@@ -17,7 +17,7 @@ from collections import defaultdict
 import os
 import gpustat
 from itertools import chain
-from tqdm import tqdm, trange, tqdm_notebook, tnrange
+from tqdm.notebook import tqdm, trange, tqdm_notebook, tnrange
 import csv
 import json
 
@@ -43,7 +43,7 @@ class NormalLinear(nn.Linear):
 
 # THE JODIE MODULE
 class JODIE(nn.Module):
-    def __init__(self, args, num_features):
+    def __init__(self, args, num_features, classes_num: int):
         super(JODIE,self).__init__()
 
         print("*** Initializing the JODIE model ***")
@@ -62,7 +62,7 @@ class JODIE(nn.Module):
 
         print("Initializing linear layers")
         self.linear_layer1 = nn.Linear(self.embedding_dim, 50)
-        self.linear_layer2 = nn.Linear(50, 2)
+        self.linear_layer2 = nn.Linear(50, classes_num)
         
         self.embedding_layer = NormalLinear(1, self.embedding_dim)
         print("*** JODIE initialization complete ***\n\n")
