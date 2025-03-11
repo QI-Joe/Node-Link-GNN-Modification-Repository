@@ -107,3 +107,5 @@ venv.bak/
 data/
 results/
 saved_models/
+Old_data/
+logs/

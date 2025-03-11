@@ -519,7 +519,7 @@ class Temporal_Splitting(object):
             
             # JODIE Data format fitting and y from node-id to edge-id
             temporal_subgraph = self.edge_special_generating(graph = temporal_subgraph, temporal_idx=idx)
-            temporal_subgraph.y = temporal_subgraph.y[temporal_subgraph.edge_index[0]]
+            # temporal_subgraph.y = temporal_subgraph.y[temporal_subgraph.edge_index[0]]
             
             temporal_subgraphs.append(temporal_subgraph)
 
