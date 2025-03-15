@@ -141,7 +141,6 @@ class Temporal_Dataloader(Data):
         self.kept_val_mask = None
 
         self.node_pos, self.edge_pos = pos
-        self.general_pos = None
         self.my_n_id = NodeIdxMatching(False, nodes=self.x, label=self.y)
         self.idx2node = self.my_n_id.node
         self.layer2_n_id: pd.DataFrame = None
@@ -653,8 +652,8 @@ def to_cuda(graph: Union[Data, Temporal_Dataloader], device:str = "cuda:0"):
     if not isinstance(graph.y, torch.Tensor) or graph.y.device != device:
         graph.y = torch.tensor(graph.y).to(device)
     
-    graph.general_pos = graph.node_pos.to(device)
-    graph.general_pos = graph.edge_pos.to(device)
+    graph.node_pos = graph.node_pos.to(device)
+    graph.edge_pos = graph.edge_pos.to(device)
 
     return graph
 

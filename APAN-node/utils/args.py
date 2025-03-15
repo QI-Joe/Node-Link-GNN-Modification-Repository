@@ -4,9 +4,10 @@ import sys
 def get_args():
     ### Argument and global variables
     parser = argparse.ArgumentParser('APAN')
-    parser.add_argument('-d', '--data', type=str, choices=["wikipedia", "reddit", "rednote"], help='Dataset name (eg. wikipedia or reddit)',
-                        default='wikipedia')
-    parser.add_argument('--tasks', type=str, default="LP", choices=["LP", "EC", "NC"], help='task name link prediction, edge or node classification')
+    parser.add_argument('-d', '--data', type=str, choices=["dblp", "reddit", "mooc"], help='Dataset name (eg. wikipedia or reddit)',
+                        default='dblp')
+    parser.add_argument('--tasks', type=str, default="NC", choices=["LP", "EC", "NC"], help='task name link prediction, edge or node classification')
+    parser.add_argument('--snapshot', default=20, type=int, help="number of snapshot in tmeporal graph NN") 
     parser.add_argument('--bs', type=int, default=200, help='Batch_size')
     parser.add_argument('--prefix', type=str, default='APAN', help='Prefix to name the checkpoints')
     parser.add_argument('--n_mail', type=int, default=10, help='Number of neighbors to sample')

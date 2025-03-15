@@ -3,6 +3,7 @@ from torch import nn
 import dgl.function as fn
 import torch.nn.functional as F
 from copy import deepcopy
+from dgl.data import DGLDataset
 
 class Decoder(nn.Module):
     def __init__(self, args, nfeat_dim):
@@ -30,7 +31,7 @@ class Decoder(nn.Module):
         labels[:pos_emb.shape[0]] = 1
         return logits, labels
 
-    def edgeclas(self, block_outputs, pos_graph, fraud_graph): 
+    def edgeclas(self, block_outputs, pos_graph: DGLDataset, fraud_graph: DGLDataset): 
         with pos_graph.local_scope():
             pos_graph.ndata['feat'] = block_outputs    
             pos_graph.apply_edges(edgeclas_concat)
@@ -46,17 +47,18 @@ class Decoder(nn.Module):
             labels = pos_graph.edata['label']
         return logits, labels
 
-    def nodeclas(self, block_outputs, pos_graph, fraud_graph): 
+    def nodeclas(self, block_outputs, pos_graph: DGLDataset, fraud_graph: DGLDataset): 
         with pos_graph.local_scope():
             pos_graph.ndata['feat'] = block_outputs
             pos_graph.apply_edges(fn.copy_u('feat', 'emb'))
+            # change here, from edata to ndata for label
             node_emb = pos_graph.edata['emb']
         if fraud_graph is not None:
             with fraud_graph.local_scope():
                 fraud_graph.apply_edges(fn.copy_u('feat', 'emb'))
                 fraud_emb = fraud_graph.edata['emb']  
             logits = self.nodeclaslayer(torch.cat([node_emb, fraud_emb]))
-            labels = torch.cat([pos_graph.edata['label'], fraud_graph.edata['label']])
+            labels = torch.cat([pos_graph.ndata['label'], fraud_graph.edata['label']])
         else:
             labels = pos_graph.edata['label']
             logits = self.nodeclaslayer(node_emb)
