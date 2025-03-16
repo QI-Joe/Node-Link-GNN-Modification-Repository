@@ -45,6 +45,7 @@ graph, idxloader = data_load(dataset=DATA)
 idx_list = Temporal_Splitting(graph=graph).temporal_splitting(time_mode="view", snapshot = SNAPSHOT, views = VIEW)
 temporaloader = Dynamic_Dataloader(idx_list, graph)
 
+num_cls = graph.y.max()+1
 for sp in range(VIEW):
     temporalgraph = temporaloader.get_temporal()
     t1_temporal = temporaloader.get_T1graph(sp)
@@ -53,10 +54,10 @@ for sp in range(VIEW):
     dst_l = temporalgraph.edge_index[1]
     e_idx_l = np.arange(len(src_l))
     label_l = temporalgraph.y
-    ts_l = temporalgraph.edge_attr.numpy()
+    ts_l = temporalgraph.edge_attr
 
-    e_feat = temporalgraph.edge_pos.numpy()
-    n_feat = temporalgraph.node_pos.numpy()
+    e_feat = temporalgraph.edge_pos
+    n_feat = temporalgraph.node_pos
 
     max_idx = max(src_l.max(), dst_l.max())+1
     assert(np.unique(np.stack([src_l, dst_l])).shape[0] == max_idx or (not math.isclose(1, args.data_usage)))  # all nodes except node 0 should appear and be compactly indexed
@@ -112,7 +113,7 @@ for sp in range(VIEW):
     val_label_l = (src_label[valid_val_flag], edge_label[valid_val_flag])
 
     test_src_l, test_dst_l, test_ts_l, test_e_idx_l, test_label_l = t1_temporal.edge_index[0], \
-    t1_temporal.edge_index[1], t1_temporal.edge_attr.numpy(), np.arange(t1_temporal.edge_index.shape[1]), t1_temporal.y
+    t1_temporal.edge_index[1], t1_temporal.edge_attr, np.arange(t1_temporal.edge_index.shape[1]), t1_temporal.y
     
     # test_src_l, test_dst_l, test_ts_l, test_e_idx_l, test_label_l = src_l[valid_test_flag], dst_l[valid_test_flag], ts_l[valid_test_flag], e_idx_l[valid_test_flag], label_l[valid_test_flag]
     
@@ -157,7 +158,7 @@ for sp in range(VIEW):
     device = torch.device('cuda:{}'.format(GPU))
     cawn = CAWN(n_feat, e_feat, agg=AGG,
                 num_layers=NUM_LAYER, use_time=USE_TIME, attn_agg_method=ATTN_AGG_METHOD, attn_mode=ATTN_MODE,
-                n_head=ATTN_NUM_HEADS, drop_out=DROP_OUT, pos_dim=POS_DIM, pos_enc=POS_ENC,
+                n_head=ATTN_NUM_HEADS, drop_out=DROP_OUT, pos_dim=POS_DIM, pos_enc=POS_ENC, num_classes = num_cls,
                 num_neighbors=NUM_NEIGHBORS, walk_n_head=WALK_N_HEAD, walk_mutual=WALK_MUTUAL, walk_linear_out=args.walk_linear_out, walk_pool=args.walk_pool,
                 cpu_cores=CPU_CORES, verbosity=VERBOSITY, get_checkpoint_path=None)
     cawn.to(device)

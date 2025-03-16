@@ -9,6 +9,8 @@ from utils import *
 from position import *
 from torch.nn import MultiheadAttention
 import torch.nn.functional as F
+from torch import Tensor
+
 PRECISION = 5
 POS_DIM_ALTER = 100
 
@@ -406,14 +408,15 @@ class AttnModel(torch.nn.Module):
 
 
 class CAWN(torch.nn.Module):
-    def __init__(self, n_feat, e_feat, agg='tree',
-                 attn_mode='prod', use_time='time', attn_agg_method='attn',
+    def __init__(self, n_feat, e_feat, num_classes, agg='tree',
+                 attn_mode='prod', use_time='time', attn_agg_method='attn', 
                  pos_dim=0, pos_enc='spd', walk_pool='attn', walk_n_head=8, walk_mutual=False,
                  num_layers=3, n_head=4, drop_out=0.1, num_neighbors=20, cpu_cores=1,
                  verbosity=1, get_checkpoint_path=None, walk_linear_out=False):
         super(CAWN, self).__init__()
         self.logger = logging.getLogger(__name__)
         self.verbosity = verbosity
+        self.num_cls = num_classes
 
         # subgraph extraction hyper-parameters
         self.num_neighbors, self.num_layers = process_sampling_numbers(num_neighbors, num_layers)
@@ -463,7 +466,7 @@ class CAWN(torch.nn.Module):
         # final projection layer
         self.affinity_score = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, 1, non_linear=not self.walk_linear_out) #torch.nn.Bilinear(self.feat_dim, self.feat_dim, 1, bias=True)
         
-        # self.projection = LogReg()
+        self.project = LogReg(self.feat_dim, num_classes=self.num_cls)
 
         self.get_checkpoint_path = get_checkpoint_path
 
@@ -513,6 +516,9 @@ class CAWN(torch.nn.Module):
         else:
             raise ValueError('invalid time option!')
         return time_encoder
+
+    def projection(self, emb: Tensor):
+        return self.project(emb)
 
     def contrast(self, src_idx_l, tgt_idx_l, bgd_idx_l, cut_time_l, e_idx_l=None, test=False):
         '''
@@ -1033,7 +1039,7 @@ class RandomWalkAttention(nn.Module):
         Return shape [batch, n_walk, feat_dim]
         '''
         combined_features = self.aggregate(hidden_embeddings, time_features, edge_features, position_features)
-        combined_features = self.feature_encoder(combined_features, masks)
+        combined_features = self.feature_encoder.forward(combined_features, masks)
         if self.pos_dim > 0:
             position_features = self.position_encoder(position_features, masks)
             combined_features = torch.cat([combined_features, position_features], dim=-1)
@@ -1084,7 +1090,9 @@ class FeatureEncoder(nn.Module):
         batch, n_walk, len_walk, feat_dim = X.shape
         X = X.view(batch*n_walk, len_walk, feat_dim)
         if mask is not None:
-            lengths = mask.view(batch*n_walk)
+            lengths: torch.Tensor = mask.view(batch*n_walk)
+            if lengths.device != "cpu":
+                lengths = lengths.cpu()
             X = pack_padded_sequence(X, lengths, batch_first=True, enforce_sorted=False)
         encoded_features = self.lstm_encoder(X)[0]
         if mask is not None:

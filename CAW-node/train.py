@@ -19,7 +19,7 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
     
     train_rand_sampler, val_rand_sampler = rand_samplers
     partial_ngh_finder, full_ngh_finder = ngh_finders
-    
+
     if mode == 't':  # transductive
         model.update_ngh_finder(full_ngh_finder)
     elif mode == 'i':  # inductive
@@ -46,8 +46,8 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
             src_l_cut, dst_l_cut = train_src_l[batch_idx], train_dst_l[batch_idx]
             ts_l_cut = train_ts_l[batch_idx]
             e_l_cut = train_e_idx_l[batch_idx]
-            src_label = train_label_l[0][batch_idx]  # currently useless since we are not predicting edge labels
-            dst_label = train_label_l[1][batch_idx]
+            src_label = torch.from_numpy(train_label_l[0][batch_idx]).cuda()  # currently useless since we are not predicting edge labels
+            dst_label = torch.from_numpy(train_label_l[1][batch_idx]).cuda()
             size = len(src_l_cut)
             src_l_fake, dst_l_fake = train_rand_sampler.sample(size)
 
@@ -56,7 +56,7 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
             model.train()
             src_emb, dst_emb = model.contrast(src_l_cut, dst_l_cut, dst_l_fake, ts_l_cut, e_l_cut)   # the core training code
             
-            src_pred, dst_pred = model.project(src_emb), model.project(dst_emb)
+            src_pred, dst_pred = model.projection(src_emb), model.projection(dst_emb)
             loss = criterion(src_pred, src_label) + criterion(dst_pred, dst_label)
             loss.backward()
             optimizer.step()
@@ -76,11 +76,11 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
         # validation phase use all information
         val_acc, val_ap, val_f1, val_auc = eval_one_epoch('val for {} nodes'.format(mode), model, val_rand_sampler, val_src_l,
                                                           val_dst_l, val_ts_l, val_label_l, val_e_idx_l)
-        logger.info('epoch: {}:'.format(epoch))
-        logger.info('epoch mean loss: {}'.format(np.mean(m_loss)))
-        logger.info('train acc: {}, val acc: {}'.format(np.mean(acc), val_acc))
-        logger.info('train auc: {}, val auc: {}'.format(np.mean(auc), val_auc))
-        logger.info('train ap: {}, val ap: {}'.format(np.mean(ap), val_ap))
+        print('epoch: {}:'.format(epoch))
+        print('epoch mean loss: {}'.format(np.mean(m_loss)))
+        print('train acc: {}, val acc: {}'.format(np.mean(acc), val_acc))
+        print('train auc: {}, val auc: {}'.format(np.mean(auc), val_auc))
+        print('train ap: {}, val ap: {}'.format(np.mean(ap), val_ap))
         if epoch == 0:
             # save things for data anaysis
             checkpoint_dir = '/'.join(model.get_checkpoint_path(0).split('/')[:-1])

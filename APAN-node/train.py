@@ -1,7 +1,5 @@
 import dgl.data
 from dgl.data.utils import load_graphs
-import sys
-sys.exit(0)
 import dgl
 import torch
 import time

@@ -113,7 +113,7 @@ class NodeIdxMatching(object):
         space_array[idx] = values
 
 
-        given_input = copy.deepcopy(src.numpy().T)
+        given_input = copy.deepcopy(src.T)
 
         col1, col2 = given_input[:, 0], given_input[:, 1]
         replace_col1 = space_array[col1]
@@ -289,8 +289,8 @@ class Temporal_Splitting(object):
         super(Temporal_Splitting, self).__init__()
         self.graph = graph 
 
-        if self.graph.edge_attr == None:
-            self.graph.edge_attr = np.arange(self.graph.edge_index.size(1))
+        if self.graph.edge_attr.any() == None:
+            self.graph.edge_attr = np.arange(self.graph.edge_index.shape[0])
 
         self.n_id = NodeIdxMatching(False, nodes=self.graph.x, label=self.graph.y)
         self.temporal_list: list[Temporal_Dataloader] = []
@@ -450,7 +450,7 @@ class Temporal_Splitting(object):
             sample_time = (edge_attr <= end) # returns an bool value
 
             sampled_edges = edge_index[:, sample_time]
-            sampled_nodes = torch.unique(sampled_edges) # orignal/gobal node index
+            sampled_nodes = np.unique(sampled_edges) # orignal/gobal node index
 
             y = self.n_id.get_label_by_node(sampled_nodes)
             y = np.array(y)
@@ -595,15 +595,15 @@ def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim
         edges, label = load_dblp_interact() if not path else load_dblp_interact(path)
 
     x = label.node.to_numpy()
-    nodes = position_encoding(x.max()+1, fea_dim)[x]
-    labels = torch.tensor(label.label.to_numpy())
+    nodes = position_encoding(x.max()+1, fea_dim)[x].numpy()
+    labels = label.label.to_numpy()
 
-    edge_index = torch.tensor(edges.loc[:, ["src", "dst"]].values.T)
+    edge_index = edges.loc[:, ["src", "dst"]].values.T
     start_time = edges.time.min()
     edges.time = edges.time.apply(lambda x: x - start_time)
-    time = torch.tensor(edges.time)
+    time = edges.time.values
     
-    time_pos = time_encoding(timestamp=time.numpy())
+    time_pos = time_encoding(timestamp=time).numpy()
     pos = (nodes, time_pos)
 
     graph = Data(x=x, edge_index=edge_index, edge_attr=time, y=labels, pos = pos)
