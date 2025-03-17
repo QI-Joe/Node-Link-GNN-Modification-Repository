@@ -39,8 +39,8 @@ def get_args():
 
     # general training hyper-parameters
     parser.add_argument('--n_epoch', type=int, default=50, help='number of epochs')
-    parser.add_argument('--bs', type=int, default=64, help='batch_size')
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--bs', type=int, default=128, help='batch_size')
+    parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
     parser.add_argument('--drop_out', type=float, default=0.1, help='dropout probability for all dropout layers')
     parser.add_argument('--tolerance', type=float, default=0,
                         help='tolerated marginal improvement for early stopper')

@@ -70,7 +70,7 @@ for sp in range(VIEW):
     if args.mode == 't':
         print('Transductive training...')
         valid_train_flag = e_idx_l<val_time
-        valid_val_flag = ts_l > val_time
+        valid_val_flag = e_idx_l > val_time
         valid_test_flag = np.ones(t1_temporal.edge_attr.shape)
 
     else:

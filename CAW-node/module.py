@@ -517,7 +517,7 @@ class CAWN(torch.nn.Module):
             raise ValueError('invalid time option!')
         return time_encoder
 
-    def projection(self, emb: Tensor):
+    def projection(self, emb: Tensor) -> Tensor:
         return self.project(emb)
 
     def contrast(self, src_idx_l, tgt_idx_l, bgd_idx_l, cut_time_l, e_idx_l=None, test=False):
@@ -575,6 +575,7 @@ class CAWN(torch.nn.Module):
     def subgraph_tree2walk(self, src_idx_l, cut_time_l, subgraph_src):
         # put src nodes and extracted subgraph together
         node_records, eidx_records, t_records = subgraph_src
+
         node_records_tmp = [np.expand_dims(src_idx_l, 1)] + node_records
         eidx_records_tmp = [np.zeros_like(node_records_tmp[0])] + eidx_records
         t_records_tmp = [np.expand_dims(cut_time_l, 1)] + t_records
@@ -583,6 +584,7 @@ class CAWN(torch.nn.Module):
         new_node_records = self.subgraph_tree2walk_one_component(node_records_tmp)
         new_eidx_records = self.subgraph_tree2walk_one_component(eidx_records_tmp)
         new_t_records = self.subgraph_tree2walk_one_component(t_records_tmp)
+    
         return new_node_records, new_eidx_records, new_t_records
 
     def subgraph_tree2walk_one_component(self, record_list):
@@ -641,6 +643,11 @@ class CAWN(torch.nn.Module):
             masks = (node_records_th != 0).sum(dim=-1).long()  # shape [batch, n_walk], here the masks means differently: it records the valid length of each walk
         else:
             raise NotImplementedError('{} forward propagation strategy not implemented.'.format(self.agg))
+        
+        # 孤单点，无连接，设置游走路径为1
+        if (masks<=0).any():
+            row, col = torch.where(masks<=0)
+            masks[row, col] = 1
         return hidden_embeddings, masks
 
     def retrieve_time_features(self, cut_time_l, t_records):
@@ -1091,6 +1098,10 @@ class FeatureEncoder(nn.Module):
         X = X.view(batch*n_walk, len_walk, feat_dim)
         if mask is not None:
             lengths: torch.Tensor = mask.view(batch*n_walk)
+            if (mask<=0).any():
+                print("we are here")
+                sys.exit()
+            
             if lengths.device != "cpu":
                 lengths = lengths.cpu()
             X = pack_padded_sequence(X, lengths, batch_first=True, enforce_sorted=False)
