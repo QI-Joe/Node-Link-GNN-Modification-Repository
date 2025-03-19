@@ -1,16 +1,18 @@
 import torch
 import numpy as np
-from tqdm import tqdm
 import math
 from eval import *
 from module import CAWN
 from torch import Tensor
+from time_evaluation import TimeRecord
 
-
+epoch_tester: int = 10
 def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, epochs, \
-              criterion: torch.nn.CrossEntropyLoss, optimizer: Adam, \
-              early_stopper, ngh_finders, rand_samplers, logger):
+              criterion: torch.nn.CrossEntropyLoss, optimizer: Adam, num_cls, \
+              early_stopper, ngh_finders, rand_samplers, logger: TimeRecord):
     # unpack the data, prepare for the training
+    global epoch_tester
+
     train_data, val_data = train_val_data
     
     train_src_l, train_dst_l, train_ts_l, train_e_idx_l, train_label_l = train_data
@@ -31,7 +33,10 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
     print('num of training instances: {}'.format(num_instance))
     print('num of batches per epoch: {}'.format(num_batch))
     idx_list = np.arange(num_instance)
+
+    score_record = list()
     for epoch in range(epochs):
+        logger.epoch_record()
         trian_acc_src, train_acc_dst, m_loss = [], [], []
         
         np.random.shuffle(idx_list)  # shuffle the training samples for every epoch
@@ -63,7 +68,7 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
             m_loss.append(loss.item())
 
             # collect training results
-            if (k+1) % (num_batch//2)==0 & (epoch+1) % 5 ==0:
+            if (k+1) % (num_batch//2)==0 & (epoch+1) % epoch_tester ==0:
                 with torch.no_grad():
                     model.eval()
                     pred_src = src_pred.detach().argmax(dim=-1).cpu().numpy()
@@ -77,10 +82,11 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
                     trian_acc_src.append(src_train_acc)
                     train_acc_dst.append(dst_train_acc)
                     print(f"Epoch {epoch} - Batch {k}: Source Accuracy: {src_train_acc:.4f}, Destination Accuracy: {dst_train_acc:.4f}, mean loss {np.mean(m_loss):.4f}")
-
+        
+        logger.epoch_end(bs)
         # validation phase use all information
-        if (epoch+1) % 2 ==0:
-            val_src, val_dst = eval_one_epoch(10, model, val_rand_sampler, val_src_l,
+        if (epoch+1) % epoch_tester ==0:
+            val_src, val_dst = eval_one_epoch(num_cls, model, val_rand_sampler, val_src_l,
                                                             val_dst_l, val_ts_l, val_label_l, val_e_idx_l)
             print('epoch: {}:'.format(epoch))
             print('epoch mean loss: {:.4f}'.format(np.mean(m_loss)))
@@ -90,13 +96,12 @@ def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, e
 
 
             val_ap = (val_src["prec"]+val_dst["prec"]) / 2
+            score_record.append(val_src, val_dst)
             # early stop check and checkpoint saving
             if early_stopper.early_stop_check(val_ap):
                 print('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
                 print(f'Loading the best model at epoch {early_stopper.best_epoch}')
                 print(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
                 break
-            import sys
-            sys.exit()
-
+    return score_record
 

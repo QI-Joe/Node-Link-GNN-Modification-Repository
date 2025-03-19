@@ -641,7 +641,7 @@ def data_load(dataset: str, for_test:bool=False, **wargs) -> tuple[Temporal_Data
     raise ValueError("Dataset not found")
 
 def t2t1_node_alignment(nodes, t_graph: Temporal_Dataloader, t1_graph: Temporal_Dataloader) -> list[int]:
-    ...
+    raise NotImplementedError("need to implemented for next step")
 
 def to_cuda(graph: Union[Data, Temporal_Dataloader], device:str = "cuda:0"):
     device = torch.device(device)
