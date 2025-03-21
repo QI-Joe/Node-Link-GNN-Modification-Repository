@@ -1,0 +1,9 @@
+log/
+processed/
+saved_checkpoints/
+saved_models/
+architecture.png
+*.txt
+*.md
+.vscode/
+__pycache__/
