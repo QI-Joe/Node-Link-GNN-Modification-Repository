@@ -317,7 +317,7 @@ for sp in range(VIEW):
                 tgan.eval()
                 break
             
-            tgan.ngh_finder = full_test_ngh_finder
+            tgan.test_emb_update(full_test_ngh_finder, t1_test.node_pos, t1_test.edge_pos)
             test_label_l = (t1_label_src, t1_laebl_dst)
             test_src, test_dst = eval_one_epoch(num_cls, tgan, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS)
 
@@ -335,6 +335,8 @@ for sp in range(VIEW):
             test_src["train_acc"], test_dst["train_acc"] = np.mean(trian_acc_src), np.mean(train_acc_dst)
             test_src["val_acc"], test_dst["val_acc"] = val_src["accuracy"], val_dst["accuracy"]
             score_recoder.extend([test_src, test_dst])
+
+            tgan.train_val_emb_restore()
 
 
 

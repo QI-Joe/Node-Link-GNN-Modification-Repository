@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from graph import NeighborFinder
 
 class MergeLayer(torch.nn.Module):
     def __init__(self, dim1, dim2, dim3, dim4):
@@ -454,11 +455,33 @@ class TGAN(torch.nn.Module):
         # self.affinity_score = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, 1) #torch.nn.Bilinear(self.feat_dim, self.feat_dim, 1, bias=True)
     
     def temproal_update(self, ngh_finder, n_feat, e_feat):
-        self.ngh_finder = ngh_finder
+        self.ngh_finder: NeighborFinder = ngh_finder
         self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)))
         self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)))
         self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True)
         self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True)
+
+    def train_val_backup(self):
+        self.n_feat_th_backup = self.n_feat_th
+        self.e_feat_th_backup = self.e_feat_th
+        self.edge_raw_embed_backup = self.edge_raw_embed
+        self.node_raw_embed_backup = self.node_raw_embed
+
+    def train_val_emb_restore(self):
+        self.n_feat_th = self.n_feat_th_backup
+        self.e_feat_th = self.e_feat_th_backup
+        self.edge_raw_embed = self.edge_raw_embed_backup
+        self.node_raw_embed = self.node_raw_embed_backup
+
+    def test_emb_update(self, ngh_finder, n_feat, e_feat):
+        self.ngh_finder: NeighborFinder = ngh_finder
+        self.train_val_backup()
+        device = self.n_feat_th.device
+        # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)).to(device))
+        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)).to(device))
+        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True).to(device)
+        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True).to(device)
 
     def forward(self, src_idx_l, target_idx_l, cut_time_l, num_neighbors=20):
         
