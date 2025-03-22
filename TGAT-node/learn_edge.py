@@ -1,13 +1,10 @@
 """Unified interface to all dynamic graph model experiments"""
 import math
-import logging
-import time
 import random
 import sys
 import argparse
 
 import torch
-import pandas as pd
 import numpy as np
 #import numba
 
@@ -19,7 +16,7 @@ from graph import NeighborFinder
 from utils import EarlyStopMonitor, RandEdgeSampler
 
 from my_dataloader import data_load, Temporal_Dataloader, Dynamic_Dataloader, Temporal_Splitting
-
+from time_evaluation import TimeRecord
 
 def t2t1_node_alignment(t_nodes: set, t: Temporal_Dataloader, t1: Temporal_Dataloader):
     t_list = t.my_n_id.node.values
@@ -37,7 +34,7 @@ def t2t1_node_alignment(t_nodes: set, t: Temporal_Dataloader, t1: Temporal_Datal
 
 ### Argument and global variables
 parser = argparse.ArgumentParser('Interface for TGAT experiments on link predictions')
-parser.add_argument('-d', '--data', type=str, help='data sources to use', default='cora')
+parser.add_argument('-d', '--data', type=str, help='data sources to use', default='dblp')
 parser.add_argument('--bs', type=int, default=200, help='batch_size')
 parser.add_argument('--prefix', type=str, default='', help='prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=20, help='number of neighbors to sample')
@@ -47,13 +44,11 @@ parser.add_argument('--n_layer', type=int, default=2, help='number of network la
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
 parser.add_argument('--drop_out', type=float, default=0.1, help='dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='idx for the gpu to use')
-parser.add_argument('--node_dim', type=int, default=100, help='Dimentions of the node embedding')
-parser.add_argument('--time_dim', type=int, default=100, help='Dimentions of the time embedding')
 parser.add_argument('--agg_method', type=str, choices=['attn', 'lstm', 'mean'], help='local aggregation method', default='attn')
 parser.add_argument('--attn_mode', type=str, choices=['prod', 'map'], default='prod', help='use dot product attention or mapping based')
 parser.add_argument('--time', type=str, choices=['time', 'pos', 'empty'], help='how to use time information', default='time')
 parser.add_argument('--uniform', action='store_true', help='take uniform sampling from temporal neighbors')
-parser.add_argument('--snapshot', default=3, help='number of temporal graph in a given dataset')
+parser.add_argument('--snapshot', default=10, type=int, help='number of temporal graph in a given dataset')
 
 try:
     args = parser.parse_args()
@@ -76,22 +71,33 @@ SEQ_LEN = NUM_NEIGHBORS
 DATA = args.data
 NUM_LAYER = args.n_layer
 LEARNING_RATE = args.lr
-NODE_DIM = args.node_dim
-TIME_DIM = args.time_dim
 SNAPSHOT = args.snapshot
 VIEW = SNAPSHOT - 2
-epoch_tester = 10
+epoch_tester = 1
 
+EMB_DIM = 37 if DATA.lower() == "cora" else 64
 
 ### Load data and train val test split
-graph, idxloader = data_load(dataset = DATA)
+graph, idxloader = data_load(dataset = DATA, emb_size=EMB_DIM)
 graph_list = Temporal_Splitting(graph=graph).temporal_splitting(time_mode='view', snapshot = SNAPSHOT, views = VIEW)
 temporaloader = Dynamic_Dataloader(graph_list, graph=graph)
+num_cls = max(graph.y) + 1
+
+NODE_DIM = graph.pos[0].shape[1]
+TIME_DIM = graph.pos[1].shape[1] # TIME_DIM == EDGE_DIM
 
 device = torch.device('cuda:{}'.format(GPU))
-tgan: TGAN = TGAN(num_layers=NUM_LAYER, use_time=USE_TIME, agg_method=AGG_METHOD, attn_mode=ATTN_MODE,
+tgan: TGAN = TGAN(num_cls=num_cls, num_layers=NUM_LAYER, use_time=USE_TIME, agg_method=AGG_METHOD, attn_mode=ATTN_MODE,
             seq_len=SEQ_LEN, n_head=NUM_HEADS, drop_out=DROP_OUT, node_dim=NODE_DIM, time_dim=TIME_DIM)
-num_cls = np.max(graph.y) + 1
+snapshot_list = list()
+
+rscore, rpresent = TimeRecord(model_name="TGAT"), TimeRecord(model_name="TGAT")
+
+rscore.get_dataset(DATA)
+rpresent.get_dataset(DATA)
+rscore.set_up_logger(name="time_logger")
+rpresent.set_up_logger()
+rpresent.record_start()
 
 for sp in range(VIEW):
     g_df: Temporal_Dataloader = temporaloader.get_temporal()
@@ -99,7 +105,6 @@ for sp in range(VIEW):
     n_feat = g_df.node_pos
 
     time_attr = g_df.edge_attr
-    val_time, test_time = list(np.quantile(time_attr, [0.70, 0.85]))
 
     src_l = g_df.edge_index[0]
     dst_l = g_df.edge_index[1]
@@ -143,7 +148,6 @@ for sp in range(VIEW):
     new_node_set = total_node_set - train_node_set
 
     # select validation and test dataset
-    valid_val_flag = (ts_l <= test_time) * (ts_l > val_time)
 
     is_new_node_edge = np.array([(a in new_node_set or b in new_node_set) for a, b in zip(src_l, dst_l)])
     nn_val_flag = valid_val_flag * is_new_node_edge
@@ -153,6 +157,7 @@ for sp in range(VIEW):
     test_src = t1_test.edge_index[0]
     test_dst = t1_test.edge_index[1]
     test_e_idx = np.arange(len(test_src))
+    test_ts = t1_test.edge_attr
     t1_label_src = t1_test.y[test_src]
     t1_laebl_dst = t1_test.y[test_dst]
     valid_test_flag = np.ones(test_e_idx.shape).astype(bool)
@@ -204,10 +209,20 @@ for sp in range(VIEW):
         full_adj_list[dst].append((src, eidx, ts))
     full_ngh_finder = NeighborFinder(full_adj_list, uniform=UNIFORM)
 
+    """
+    test_src, test_dst, test_e_idx, test_ts
+    """
+    max_test_id = max(test_src.max(), test_dst.max())
+    full_adj_list_test = [[] for _ in range(max_test_id + 1)]
+    for tsrc, tdst, teidx, tts in zip(test_src, test_dst, test_e_idx, test_ts):
+        full_adj_list_test[tsrc].append((tdst, teidx, tts))
+        full_adj_list_test[tdst].append((tsrc, teidx, tts))
+    full_test_ngh_finder = NeighborFinder(full_adj_list_test, uniform=UNIFORM)
+
     train_rand_sampler = RandEdgeSampler(train_src_l, train_dst_l)
     val_rand_sampler = RandEdgeSampler(src_l, dst_l)
     nn_val_rand_sampler = RandEdgeSampler(nn_val_src_l, nn_val_dst_l)
-    test_rand_sampler = RandEdgeSampler(src_l, dst_l)
+    test_rand_sampler = RandEdgeSampler(test_src, test_dst)
     nn_test_rand_sampler = RandEdgeSampler(nn_test_src_l, nn_test_dst_l)
 
 
@@ -228,6 +243,7 @@ for sp in range(VIEW):
     early_stopper = EarlyStopMonitor()
 
     trian_acc_src, train_acc_dst = list(), list()
+    score_recoder = list()
     for epoch in range(NUM_EPOCH):
         # Training 
         # training use only training graph
@@ -277,19 +293,23 @@ for sp in range(VIEW):
 
             val_label_l = (val_label_src, val_label_dst)
             val_src, val_dst = eval_one_epoch(num_cls, tgan, val_rand_sampler, val_src_l,
-                                                            val_dst_l, val_ts_l, val_label_l)
+                                                            val_dst_l, val_ts_l, val_label_l, num_neighbors=NUM_NEIGHBORS)
 
             nn_val_label_l = (nn_val_label_src, nn_val_label_dst)
             nn_val_src, nn_val_dst = eval_one_epoch(num_cls, tgan, nn_val_rand_sampler, nn_val_src_l, \
-                                                    nn_val_dst_l, nn_val_ts_l, nn_val_label_l)
+                                                    nn_val_dst_l, nn_val_ts_l, nn_val_label_l, num_neighbors=NUM_NEIGHBORS)
                 
             print('epoch: {}:'.format(epoch))
-            print('Src train acc: {:.4f}, Src val acc: {:.4f}'.format(np.mean(trian_acc_src), val_src["accuracy"]))
-            print('Dst train acc: {:.4f}, Dst val acc: {:.4f}'.format(np.mean(train_acc_dst), val_dst["accuracy"]))
-            print('Src val ap: {:.4f}, Dst val ap: {:.4f}'.format(val_src["prec"], val_dst["prec"]))
+            print('Src train acc: {:.4f}, Src val OLD NODE acc: {:.4f}'.format(np.mean(trian_acc_src), val_src["accuracy"]))
+            print('Dst train acc: {:.4f}, Dst val OLD NODE acc: {:.4f}'.format(np.mean(train_acc_dst), val_dst["accuracy"]))
+            print('Src OLD NODE val precision: {:.4f}, Dst OLD NODE val precision: {:.4f}'.format(val_src["precision"], val_dst["precision"]))
+            
+            print('Src NEW NODE val acc: {:.4f}, Dst NEW NODE val acc: {:.4f}'.format(nn_val_src["accuracy"], nn_val_dst["accuracy"]))
+            print('Src NEW NODE val ap: {:.4f}, Dst NEW NODE val ap: {:.4f}'.format(nn_val_src["precision"], nn_val_dst["precision"]))
+            print('Src NEW NODE precision: {:.4f}, Dst NEW NODE precision: {:.4f}'.format(nn_val_src["precision"], nn_val_dst["precision"]))
 
-            val_ap = (val_src["prec"]+val_dst["prec"]) / 2
-            nn_val_ap = (nn_val_src["prec"]+nn_val_dst["prec"]) / 2
+            val_ap = (val_src["precision"]+val_dst["precision"]) / 2
+            nn_val_ap = (nn_val_src["precision"]+nn_val_dst["precision"]) / 2
             if early_stopper.early_stop_check(val_ap):
                 print('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
                 print(f'Loading the best model at epoch {early_stopper.best_epoch}')
@@ -297,11 +317,12 @@ for sp in range(VIEW):
                 tgan.eval()
                 break
             
+            tgan.ngh_finder = full_test_ngh_finder
             test_label_l = (t1_label_src, t1_laebl_dst)
-            test_src, test_dst = eval_one_epoch(num_cls, tgan, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l)
+            test_src, test_dst = eval_one_epoch(num_cls, tgan, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS)
 
             nn_test_label = (nn_test_label_src, nn_test_label_dst)
-            nn_test_src, nn_test_dst = eval_one_epoch(num_cls, tgan, nn_test_rand_sampler, src=nn_test_src, dst = nn_test_dst, ts = nn_test_ts_l, label=nn_test_label)
+            nn_test_src, nn_test_dst = eval_one_epoch(num_cls, tgan, nn_test_rand_sampler, src=nn_test_src_l, dst = nn_test_dst_l, ts = nn_test_ts_l, label=nn_test_label, num_neighbors=NUM_NEIGHBORS)
 
             test_src["train_acc"], test_dst["train_acc"] = np.mean(trian_acc_src), np.mean(train_acc_dst)
             test_src["val_acc"], test_dst["val_acc"] = val_src["accuracy"], val_dst["accuracy"]
@@ -311,15 +332,20 @@ for sp in range(VIEW):
             test_recall = (test_src["recall"] + test_dst["recall"]) / 2
             print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format(args.mode, test_acc, test_ap, test_recall))            
 
+            test_src["train_acc"], test_dst["train_acc"] = np.mean(trian_acc_src), np.mean(train_acc_dst)
+            test_src["val_acc"], test_dst["val_acc"] = val_src["accuracy"], val_dst["accuracy"]
+            score_recoder.extend([test_src, test_dst])
+
+
 
     # testing phase use all information
     tgan.ngh_finder = full_ngh_finder
     test_old_src, test_old_dst = eval_one_epoch('test for old nodes', tgan, test_rand_sampler, test_src_l, 
-    test_dst_l, test_ts_l, test_label_l)
+    test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS)
 
 
     test_new_src, test_new_dst = eval_one_epoch('test for new nodes', tgan, nn_test_rand_sampler, nn_test_src_l, 
-    nn_test_dst_l, nn_test_ts_l, nn_test_label)
+    nn_test_dst_l, nn_test_ts_l, nn_test_label, num_neighbors=NUM_NEIGHBORS)
 
     test_new_acc = (test_new_src["accuracy"] + test_new_dst["accuracy"]) / 2
     test_new_prec = (test_new_src["precision"] + test_new_dst["precision"]) / 2
@@ -333,9 +359,12 @@ for sp in range(VIEW):
     print('Test statistics: New nodes -- acc: {:.4f}, recall: {:.4f}, precision: {:.4f}'.format(test_old_acc, test_old_recall, test_old_prec))
 
     temporaloader.update_event(sp)
+    rpresent.score_record(temporal_score_=score_recoder, node_size=g_df.num_nodes, temporal_idx=sp, epoch_interval=epoch_tester)
+    snapshot_list.append(score_recoder)
 
- 
 
-
+rpresent.record_end()
+rscore.record_end()
+rscore.fast_processing(snapshot_list)
 
 

@@ -406,10 +406,10 @@ class TGAN(torch.nn.Module):
         self.null_idx = null_idx
         self.logger = logging.getLogger(__name__)
         
-        self.feat_dim = self.n_feat_th.shape[1]
+        self.feat_dim = node_dim
         
         self.n_feat_dim = self.feat_dim
-        self.e_feat_dim = self.feat_dim
+        self.e_feat_dim = time_dim
         self.model_dim = self.feat_dim
         
         self.use_time = use_time
@@ -418,9 +418,9 @@ class TGAN(torch.nn.Module):
 
         if agg_method == 'attn':
             self.logger.info('Aggregation uses attention model')
-            self.attn_model_list = torch.nn.ModuleList([AttnModel(self.feat_dim, 
-                                                               self.feat_dim, 
-                                                               self.feat_dim,
+            self.attn_model_list = torch.nn.ModuleList([AttnModel(feat_dim=self.feat_dim, 
+                                                               edge_dim=self.e_feat_dim, 
+                                                               time_dim=self.e_feat_dim,
                                                                attn_mode=attn_mode, 
                                                                n_head=n_head, 
                                                                drop_out=drop_out) for _ in range(num_layers)])
@@ -440,18 +440,18 @@ class TGAN(torch.nn.Module):
         
         if use_time == 'time':
             self.logger.info('Using time encoding')
-            self.time_encoder = TimeEncode(expand_dim=self.n_feat_th.shape[1])
+            self.time_encoder = TimeEncode(expand_dim=self.e_feat_dim)
         elif use_time == 'pos':
             assert(seq_len is not None)
             self.logger.info('Using positional encoding')
-            self.time_encoder = PosEncode(expand_dim=self.n_feat_th.shape[1], seq_len=seq_len)
+            self.time_encoder = PosEncode(expand_dim=self.e_feat_dim, seq_len=seq_len)
         elif use_time == 'empty':
             self.logger.info('Using empty encoding')
-            self.time_encoder = EmptyEncode(expand_dim=self.n_feat_th.shape[1])
+            self.time_encoder = EmptyEncode(expand_dim=self.e_feat_dim)
         else:
             raise ValueError('invalid time option!')
         
-        self.affinity_score = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, 1) #torch.nn.Bilinear(self.feat_dim, self.feat_dim, 1, bias=True)
+        # self.affinity_score = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, 1) #torch.nn.Bilinear(self.feat_dim, self.feat_dim, 1, bias=True)
     
     def temproal_update(self, ngh_finder, n_feat, e_feat):
         self.ngh_finder = ngh_finder
@@ -470,7 +470,7 @@ class TGAN(torch.nn.Module):
         return score
     
     def projection(self, emb: Tensor) -> Tensor:
-        return self.project(emb)
+        return self.project_layer(emb)
     
     def contrast(self, src_idx_l, target_idx_l, background_idx_l, cut_time_l, num_neighbors=20):
         src_embed = self.tem_conv(src_idx_l, cut_time_l, self.num_layers, num_neighbors)

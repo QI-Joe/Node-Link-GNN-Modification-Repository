@@ -640,8 +640,19 @@ def data_load(dataset: str, for_test:bool=False, **wargs) -> tuple[Temporal_Data
         return graph, NodeIdxMatching(False, nodes=nodes, label=graph.y.numpy())
     raise ValueError("Dataset not found")
 
-def t2t1_node_alignment(nodes, t_graph: Temporal_Dataloader, t1_graph: Temporal_Dataloader) -> list[int]:
-    raise NotImplementedError("need to implemented for next step")
+def t2t1_node_alignment(t_nodes: set, t: Temporal_Dataloader, t1: Temporal_Dataloader):
+    t_list = t.my_n_id.node.values
+    t1_list = t1.my_n_id.node.values
+
+    t2t1 = t_list[np.isin(t_list[:, 0], list(t_nodes)), 1].tolist()
+    t1_extra = list(set(t1_list[:,1]) - set(t_list[:,1]))
+
+    new_nodes = t2t1+t1_extra
+
+    t1_src = np.isin(t1.edge_index[0], new_nodes)
+    t1_dst = np.isin(t1.edge_index[1], new_nodes)
+
+    return t1_src*t1_dst
 
 def to_cuda(graph: Union[Data, Temporal_Dataloader], device:str = "cuda:0"):
     device = torch.device(device)

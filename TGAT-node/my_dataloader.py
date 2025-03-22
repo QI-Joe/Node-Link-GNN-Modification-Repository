@@ -24,6 +24,7 @@ MATHOVERFLOW, MathOverflow_extra = "Temporal_Dataset/mathoverflow/", ["sx-mathov
 OVERFLOW = r"Temporal_Dataset/"
 STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow"]
 DYNAMIC = ["mathoverflow", "askubuntu", "stackoverflow"]
+EMB_SIZE = 64
 
 class NodeIdxMatching(object):
 
@@ -456,7 +457,7 @@ class Temporal_Splitting(object):
             y = self.n_id.get_label_by_node(sampled_nodes)
             y = np.array(y)
             nodepos, edgepos = pos
-            subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos[sample_time].numpy())
+            subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos[sample_time])
 
             temporal_subgraph = Temporal_Dataloader(nodes=sampled_nodes, edge_index=sampled_edges, \
                 edge_attr=edge_attr[sample_time], y=y, pos=subpos).get_Temporalgraph()
@@ -477,7 +478,7 @@ def label_match(labels: list):
             outer_ptr += 1
     return combination
 
-def time_encoding(timestamp: torch.Tensor, emb_size: int = 64):
+def time_encoding(timestamp: torch.Tensor, emb_size: int = EMB_SIZE):
     
     timestamps = torch.tensor(timestamp, dtype=torch.float32).unsqueeze(1)
     max_time = timestamps.max() if timestamps.numel() > 0 else 1.0  # Avoid division by zero
@@ -489,7 +490,7 @@ def time_encoding(timestamp: torch.Tensor, emb_size: int = 64):
     
     return te
 
-def position_encoding(max_len, emb_size)->torch.Tensor:
+def position_encoding(max_len, emb_size: int = EMB_SIZE)->torch.Tensor:
     pe = torch.zeros(max_len, emb_size)
     position = torch.arange(0, max_len).unsqueeze(1)
 
@@ -626,7 +627,9 @@ def load_tsv(path: list[tuple[str]], *wargs) -> tuple[pd.DataFrame]:
 def load_example():
     return "node_feat", "node_label", "edge_index", "train_indices", "val_indices", "test_indices"
 
-def data_load(dataset: str, **wargs) -> tuple[Temporal_Dataloader, Union[NodeIdxMatching|dict]]:
+def data_load(dataset: str, emb_size: int, **wargs) -> tuple[Temporal_Dataloader, Union[NodeIdxMatching|dict]]:
+    global EMB_SIZE
+    EMB_SIZE = emb_size
     dataset = dataset.lower()
     if dataset in STATIC:
         return load_static_dataset(dataset=dataset, **wargs)
@@ -637,7 +640,7 @@ def data_load(dataset: str, **wargs) -> tuple[Temporal_Dataloader, Union[NodeIdx
         graph.edge_attr = edge_attr
         
         node_pos = graph.x.numpy()
-        edge_pos = position_encoding(graph.num_edges, emb_size=64)
+        edge_pos = position_encoding(graph.num_edges, emb_size=emb_size)
 
         graph.pos=(node_pos, edge_pos)
         nodes = [i for i in range(graph.x.shape[0])]

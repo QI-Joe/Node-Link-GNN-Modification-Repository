@@ -269,7 +269,7 @@ for sp in range(VIEW):
             test_ap = (test_src["precision"] + test_dst["precision"]) / 2
             test_recall = (test_src["recall"] + test_dst["recall"]) / 2
             print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format(args.mode, test_acc, test_ap, test_recall))            
-            score_record.append(test_src, test_dst)
+            score_record.extend([test_src, test_dst])
 
             # early stop check and checkpoint saving
             if early_stopper.early_stop_check(val_ap):
