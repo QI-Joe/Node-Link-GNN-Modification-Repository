@@ -73,7 +73,7 @@ NUM_LAYER = args.n_layer
 LEARNING_RATE = args.lr
 SNAPSHOT = args.snapshot
 VIEW = SNAPSHOT - 2
-epoch_tester = 1
+epoch_tester = 5
 
 EMB_DIM = 37 if DATA.lower() == "cora" else 64
 
@@ -225,6 +225,12 @@ for sp in range(VIEW):
     test_rand_sampler = RandEdgeSampler(test_src, test_dst)
     nn_test_rand_sampler = RandEdgeSampler(nn_test_src_l, nn_test_dst_l)
 
+    print(f"training edges: {len(train_src_l)} \
+          \nall edges {len(src_l)}\
+          \ninductive train learning edges {len(nn_val_src_l)}\
+          \ntest edges: {len(test_src)}\
+          \ninductive test learning edges: {len(nn_test_src_l)}\n")
+
 
     ### Model initialize
     tgan.temproal_update(train_ngh_finder, n_feat=n_feat, e_feat=e_feat)
@@ -239,7 +245,7 @@ for sp in range(VIEW):
     print('num of batches per epoch: {}'.format(num_batch))
     idx_list = np.arange(num_instance)
     np.random.shuffle(idx_list) 
-
+    f = torch.nn.LogSoftmax(dim=-1)
     early_stopper = EarlyStopMonitor()
 
     trian_acc_src, train_acc_dst = list(), list()
@@ -266,7 +272,7 @@ for sp in range(VIEW):
             src_emb, dst_emb = tgan.contrast(src_l_cut, dst_l_cut, dst_l_fake, ts_l_cut, NUM_NEIGHBORS)
             src_pred, dst_pred = tgan.projection(src_emb), tgan.projection(dst_emb)
         
-            loss = criterion(src_emb, label_l_cut_src)+criterion(dst_emb, label_l_cut_dst)
+            loss = criterion(f(src_pred), label_l_cut_src)+criterion(f(dst_pred), label_l_cut_dst)
             
             loss.backward()
             optimizer.step()
@@ -292,12 +298,14 @@ for sp in range(VIEW):
             tgan.ngh_finder = full_ngh_finder
 
             val_label_l = (val_label_src, val_label_dst)
+            val_interval = (len(val_src_l) // 200) // 4
             val_src, val_dst = eval_one_epoch(num_cls, tgan, val_rand_sampler, val_src_l,
-                                                            val_dst_l, val_ts_l, val_label_l, num_neighbors=NUM_NEIGHBORS)
+                                                            val_dst_l, val_ts_l, val_label_l, num_neighbors=NUM_NEIGHBORS, interval=val_interval)
 
             nn_val_label_l = (nn_val_label_src, nn_val_label_dst)
+            nn_val_interval = (len(nn_val_src_l) // 200) // 4
             nn_val_src, nn_val_dst = eval_one_epoch(num_cls, tgan, nn_val_rand_sampler, nn_val_src_l, \
-                                                    nn_val_dst_l, nn_val_ts_l, nn_val_label_l, num_neighbors=NUM_NEIGHBORS)
+                                                    nn_val_dst_l, nn_val_ts_l, nn_val_label_l, num_neighbors=NUM_NEIGHBORS, interval=nn_val_interval)
                 
             print('epoch: {}:'.format(epoch))
             print('Src train acc: {:.4f}, Src val OLD NODE acc: {:.4f}'.format(np.mean(trian_acc_src), val_src["accuracy"]))
@@ -319,10 +327,12 @@ for sp in range(VIEW):
             
             tgan.test_emb_update(full_test_ngh_finder, t1_test.node_pos, t1_test.edge_pos)
             test_label_l = (t1_label_src, t1_laebl_dst)
-            test_src, test_dst = eval_one_epoch(num_cls, tgan, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS)
+            test_interval = (len(test_src_l) // 200) // 4
+            test_src, test_dst = eval_one_epoch(num_cls, tgan, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS, interval=test_interval)
 
             nn_test_label = (nn_test_label_src, nn_test_label_dst)
-            nn_test_src, nn_test_dst = eval_one_epoch(num_cls, tgan, nn_test_rand_sampler, src=nn_test_src_l, dst = nn_test_dst_l, ts = nn_test_ts_l, label=nn_test_label, num_neighbors=NUM_NEIGHBORS)
+            nn_test_interval = (len(nn_test_src_l) // 200) // 4
+            nn_test_src, nn_test_dst = eval_one_epoch(num_cls, tgan, nn_test_rand_sampler, src=nn_test_src_l, dst = nn_test_dst_l, ts = nn_test_ts_l, label=nn_test_label, num_neighbors=NUM_NEIGHBORS, interval=nn_test_interval)
 
             test_src["train_acc"], test_dst["train_acc"] = np.mean(trian_acc_src), np.mean(train_acc_dst)
             test_src["val_acc"], test_dst["val_acc"] = val_src["accuracy"], val_dst["accuracy"]
@@ -330,7 +340,7 @@ for sp in range(VIEW):
             test_acc = (test_src["accuracy"] + test_dst["accuracy"]) / 2
             test_ap = (test_src["precision"] + test_dst["precision"]) / 2
             test_recall = (test_src["recall"] + test_dst["recall"]) / 2
-            print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format(args.mode, test_acc, test_ap, test_recall))            
+            print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format("TGAT", test_acc, test_ap, test_recall))            
 
             test_src["train_acc"], test_dst["train_acc"] = np.mean(trian_acc_src), np.mean(train_acc_dst)
             test_src["val_acc"], test_dst["val_acc"] = val_src["accuracy"], val_dst["accuracy"]
@@ -341,24 +351,17 @@ for sp in range(VIEW):
 
 
     # testing phase use all information
-    tgan.ngh_finder = full_ngh_finder
+    tgan.test_emb_update(full_test_ngh_finder, t1_test.node_pos, t1_test.edge_pos)
     test_old_src, test_old_dst = eval_one_epoch('test for old nodes', tgan, test_rand_sampler, test_src_l, 
-    test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS)
+    test_dst_l, test_ts_l, test_label_l, num_neighbors=NUM_NEIGHBORS, interval=test_interval)
 
 
-    test_new_src, test_new_dst = eval_one_epoch('test for new nodes', tgan, nn_test_rand_sampler, nn_test_src_l, 
-    nn_test_dst_l, nn_test_ts_l, nn_test_label, num_neighbors=NUM_NEIGHBORS)
 
-    test_new_acc = (test_new_src["accuracy"] + test_new_dst["accuracy"]) / 2
-    test_new_prec = (test_new_src["precision"] + test_new_dst["precision"]) / 2
-    test_new_recall = (test_new_src["recall"] + test_new_dst["recall"]) / 2
+    test_old_acc = (test_old_src["accuracy"] + test_old_dst["accuracy"]) / 2
+    test_old_prec = (test_old_src["precision"] + test_old_dst["precision"]) / 2
+    test_old_recall = (test_old_src["recall"] + test_old_dst["recall"]) / 2
 
-    test_old_acc = (test_new_src["accuracy"] + test_new_dst["accuracy"]) / 2
-    test_old_prec = (test_new_src["precision"] + test_new_dst["precision"]) / 2
-    test_old_recall = (test_new_src["recall"] + test_new_dst["recall"]) / 2
-
-    print('Test statistics: Old nodes -- acc: {:.4f}, recall: {:.4f}, precision: {:.4f}'.format(test_new_acc, test_new_recall, test_new_prec))
-    print('Test statistics: New nodes -- acc: {:.4f}, recall: {:.4f}, precision: {:.4f}'.format(test_old_acc, test_old_recall, test_old_prec))
+    print('Test statistics: Old nodes -- acc: {:.4f}, recall: {:.4f}, precision: {:.4f}'.format(test_old_acc, test_old_recall, test_old_prec))
 
     temporaloader.update_event(sp)
     rpresent.score_record(temporal_score_=score_recoder, node_size=g_df.num_nodes, temporal_idx=sp, epoch_interval=epoch_tester)

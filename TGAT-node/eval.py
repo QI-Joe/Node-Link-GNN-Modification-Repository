@@ -45,8 +45,8 @@ def Simple_Regression(embedding: torch.Tensor, label: Union[torch.Tensor | np.nd
         loss.backward(retain_graph=False)
         optimizer.step()
 
-        if (epoch+1) % 1000 == 0:
-            print(f'LogRegression | Epoch {epoch+1}: loss {loss.item():.4f}')
+        # if (epoch+1) % 1000 == 0:
+        #     print(f'LogRegression | Epoch {epoch+1}: loss {loss.item():.4f}')
 
     with torch.no_grad():
         projection = linear_regression(embedding)
@@ -77,7 +77,7 @@ def dict_merge(d1: dict, d2: dict, k):
 src_proj: LogRegression = None
 dest_proj: LogRegression = None
 
-def eval_one_epoch(num_classes, tgan: TGAN, sampler: RandEdgeSampler, src, dst, ts, label, num_neighbors: int):
+def eval_one_epoch(num_classes, tgan: TGAN, sampler: RandEdgeSampler, src, dst, ts, label, num_neighbors: int, interval=None):
     global src_proj, dest_proj
     val_metrics_src, val_metrics_dst = dict(), dict()
     tgan = tgan.eval()
@@ -86,8 +86,9 @@ def eval_one_epoch(num_classes, tgan: TGAN, sampler: RandEdgeSampler, src, dst, 
     num_test_batch = math.ceil(num_test_instance / TEST_BATCH_SIZE)
     src_lb, dest_lb = label
 
+    interval = num_test_batch//4
+
     src_collector, dst_collector, label_idx = None, None, 0
-    print(num_test_batch)
     for k in range(num_test_batch):
         s_idx = k * TEST_BATCH_SIZE
         e_idx = min(num_test_instance - 1, s_idx + TEST_BATCH_SIZE)
@@ -95,6 +96,9 @@ def eval_one_epoch(num_classes, tgan: TGAN, sampler: RandEdgeSampler, src, dst, 
         dst_l_cut = dst[s_idx:e_idx]
         ts_l_cut = ts[s_idx:e_idx]
 
+        if len(src_l_cut)<=5:
+            print(s_idx, e_idx)
+            continue
         size = len(src_l_cut)
         src_l_fake, dst_l_fake = sampler.sample(size)
         with torch.no_grad():
@@ -108,7 +112,7 @@ def eval_one_epoch(num_classes, tgan: TGAN, sampler: RandEdgeSampler, src, dst, 
             src_collector = torch.vstack([src_collector, src_emb])
             dst_collector = torch.vstack([dst_collector, dest_emb])
         label_idx = e_idx
-        if (k+1) % 5 == 0:
+        if interval==0 or (k+1) % interval == 0:
             print(src_collector.shape, label_idx)
             src_metrics, src_proj = Simple_Regression(src_collector, src_lb[:e_idx], num_classes=num_classes, project_model=src_proj, return_model=True)
             dest_metrics, dest_proj = Simple_Regression(dst_collector, dest_lb[:e_idx], num_classes=num_classes, project_model=dest_proj, return_model=True)
