@@ -3,7 +3,7 @@ from torch import nn
 
 from collections import defaultdict
 from copy import deepcopy
-
+import numpy as np
 
 class Memory(nn.Module):
 
@@ -20,7 +20,7 @@ class Memory(nn.Module):
 
     self.__init_memory__()
 
-  def __init_memory__(self):
+  def __init_memory__(self, n_feat: np.ndarray = None, e_feat: np.ndarray = None):
     """
     Initializes the memory to all zeros. It should be called at the start of each epoch.
     """

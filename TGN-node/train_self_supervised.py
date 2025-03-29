@@ -19,7 +19,7 @@ np.random.seed(0)
 ### Argument and global variables
 parser = argparse.ArgumentParser('TGN self-supervised training')
 parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',
-                    default='wikipedia')
+                    default='dblp')
 parser.add_argument('--bs', type=int, default=200, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
@@ -108,7 +108,8 @@ for i in range(VIEW):
   train_rand_sampler = RandEdgeSampler(train_data.sources, train_data.destinations)
   val_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=0)
   test_rand_sampler = RandEdgeSampler(test_data.sources, test_data.destinations, seed=2)
-  src_label, dst_label = train_data.labels[train_data.srouces], train_data.label[train_data.destinations]
+  
+  src_label, dst_label = train_data.labels[train_data.sources], train_data.labels[train_data.destinations]
 
 
   # Set device
@@ -120,7 +121,7 @@ for i in range(VIEW):
     compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 
-  node_features, edge_features = temporaloader.node_feat, temporaloader.edge_feat
+  node_features, edge_features = train_data.node_feat, train_data.edge_feat
 
   # Initialize Model
   tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
@@ -139,7 +140,7 @@ for i in range(VIEW):
             use_destination_embedding_in_message=args.use_destination_embedding_in_message,
             use_source_embedding_in_message=args.use_source_embedding_in_message,
             dyrep=args.dyrep)
-  criterion = torch.nn.BCELoss()
+  criterion = torch.nn.CrossEntropyLoss()
   optimizer = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
   tgn = tgn.to(device)
 
@@ -201,8 +202,8 @@ for i in range(VIEW):
                                                             edge_idxs=edge_idxs_batch, n_neighbors=NUM_NEIGHBORS)
         # pos_prob, neg_prob = tgn.compute_edge_probabilities(sources_batch, destinations_batch, negatives_batch,
         #                                                     timestamps_batch, edge_idxs_batch, NUM_NEIGHBORS)
-
-        loss += criterion(pos_prob.squeeze(), pos_label) + criterion(neg_prob.squeeze(), neg_label)
+        src_batch_label, dst_batch_label = torch.from_numpy(src_label[start_idx: end_idx]).to(device), torch.from_numpy(dst_label[start_idx: end_idx]).to(device)
+        loss += criterion(src_emb, src_batch_label) + criterion(dst_emb, dst_batch_label)
 
       loss /= args.backprop_every
 
@@ -231,43 +232,15 @@ for i in range(VIEW):
                                           negative_edge_sampler=val_rand_sampler,
                                           data=val_data,
                                           n_neighbors=NUM_NEIGHBORS)
-    if USE_MEMORY:
-      val_memory_backup = tgn.memory.backup_memory()
-      # Restore memory we had at the end of training to be used when validating on new nodes.
-      # Also backup memory after validation so it can be used for testing (since test edges are
-      # strictly later in time than validation edges)
-      tgn.memory.restore_memory(train_memory_backup)
-
-    # Validate on unseen nodes
-    nn_val_ap, nn_val_auc = eval_edge_prediction(model=tgn,
-                                                  negative_edge_sampler=val_rand_sampler,
-                                                  data=new_node_val_data,
-                                                  n_neighbors=NUM_NEIGHBORS)
-
-    if USE_MEMORY:
-      # Restore memory we had at the end of validation
-      tgn.memory.restore_memory(val_memory_backup)
-
-    new_nodes_val_aps.append(nn_val_ap)
     val_aps.append(val_ap)
     train_losses.append(np.mean(m_loss))
-
-    # Save temporary results to disk
-    # pickle.dump({
-    #   "val_aps": val_aps,
-    #   "new_nodes_val_aps": new_nodes_val_aps,
-    #   "train_losses": train_losses,
-    #   "epoch_times": epoch_times,
-    #   "total_epoch_times": total_epoch_times
-    # }, open(results_path, "wb"))
 
     total_epoch_time = time.time() - start_epoch
     total_epoch_times.append(total_epoch_time)
 
     print('epoch: {} took {:.2f}s'.format(epoch, total_epoch_time))
     print('Epoch mean loss: {}'.format(np.mean(m_loss)))
-    print('val auc: {}, new node val auc: {}'.format(val_auc, nn_val_auc))
-    print('val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
+    print('val acc: {}, val precision: {}'.format(val_auc, val_ap))
 
     # Early stopping
     if early_stopper.early_stop_check(val_ap):
@@ -292,13 +265,5 @@ for i in range(VIEW):
                                                               data=test_data,
                                                               n_neighbors=NUM_NEIGHBORS)
 
-  if USE_MEMORY:
-    tgn.memory.restore_memory(val_memory_backup)
-
-  # Test on unseen nodes
-  nn_test_ap, nn_test_auc = eval_edge_prediction(model=tgn,
-                                                                          negative_edge_sampler=nn_test_rand_sampler,
-                                                                          data=new_node_test_data,
-                                                                          n_neighbors=NUM_NEIGHBORS)
 
 

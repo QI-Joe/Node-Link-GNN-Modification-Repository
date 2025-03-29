@@ -7,3 +7,4 @@ architecture.png
 *.md
 .vscode/
 __pycache__/
+logs/

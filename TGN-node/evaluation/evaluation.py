@@ -2,7 +2,9 @@ import math
 
 import numpy as np
 import torch
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+from torch.optim import Adam
+from typing import Union
 
 
 def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_size=200):
@@ -46,10 +48,84 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
   return np.mean(val_ap), np.mean(val_auc)
 
 
+class LogRegression(torch.nn.Module):
+    def __init__(self, in_channels, num_classes):
+        super(LogRegression, self).__init__()
+        self.lin = torch.nn.Linear(in_channels, num_classes)
+        torch.nn.init.xavier_uniform_(self.lin.weight.data)
+        # torch.nn.init.xavier_uniform_(self.lin.weight.data)
+
+    def weights_init(self, m):
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight.data)
+            if m.bias is not None:
+                m.bias.data.fill_(0.0)
+
+    def forward(self, x):
+        ret = self.lin(x)
+        return ret
+
+def Simple_Regression(embedding: torch.Tensor, label: Union[torch.Tensor | np.ndarray], num_classes: int, \
+                      num_epochs: int = 1500,  project_model=None, return_model: bool = False) -> tuple[float, float, float, float]:
+    
+    device = embedding.device
+    if not isinstance(label, torch.Tensor):
+        label = torch.LongTensor(label).to(device)
+    linear_regression = LogRegression(embedding.size(1), num_classes).to(device) if project_model==None else project_model
+    f = torch.nn.LogSoftmax(dim=-1)
+    optimizer = Adam(linear_regression.parameters(), lr=0.01, weight_decay=1e-4)
+
+    loss_fn = torch.nn.CrossEntropyLoss()
+
+    for epoch in range(num_epochs):
+        linear_regression.train()
+        optimizer.zero_grad()
+        output = linear_regression(embedding)
+        loss = loss_fn(f(output), label)
+
+        loss.backward(retain_graph=False)
+        optimizer.step()
+
+        # if (epoch+1) % 1000 == 0:
+        #     print(f'LogRegression | Epoch {epoch+1}: loss {loss.item():.4f}')
+
+    with torch.no_grad():
+        projection = linear_regression(embedding)
+        y_true, y_hat = label.cpu().numpy(), projection.argmax(-1).cpu().numpy()
+        accuracy, precision, recall, f1 = accuracy_score(y_true, y_hat), \
+                                        precision_score(y_true, y_hat, average='macro', zero_division=0), \
+                                        recall_score(y_true, y_hat, average='macro'),\
+                                        f1_score(y_true, y_hat, average='macro')
+        prec_micro, recall_micro, f1_micro = precision_score(y_true, y_hat, average='micro', zero_division=0), \
+                                            recall_score(y_true, y_hat, average='micro'),\
+                                            f1_score(y_true, y_hat, average='micro')
+    if return_model:
+        return {"test_acc": accuracy, "accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1, \
+            "micro_prec": prec_micro, "micro_recall": recall_micro, "micro_f1": f1_micro}, linear_regression
+    
+    return {"test_acc": accuracy, "accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1, \
+            "micro_prec": prec_micro, "micro_recall": recall_micro, "micro_f1": f1_micro}, None
+
+def dict_merge(d1: dict, d2: dict, k):
+    if not d1:
+        return d2
+    
+    for key, val in d2.items():
+        d1[key] = (d1[key]*(k-1) + d2[key]) / k
+    return d1
+
+
+eval_model: Union[torch.nn.Linear | None] = None
 def eval_node_classification(tgn, decoder, data, edge_idxs, batch_size, n_neighbors):
+  global eval_model
+  metrics_result = dict()
   pred_prob = np.zeros(len(data.sources))
   num_instance = len(data.sources)
   num_batch = math.ceil(num_instance / batch_size)
+  labels = data.labels[data.sources]
+
+  embedding_collector = torch.tensor([0])
+  batch_interval = num_batch // 4
 
   with torch.no_grad():
     decoder.eval()
@@ -69,8 +145,10 @@ def eval_node_classification(tgn, decoder, data, edge_idxs, batch_size, n_neighb
                                                                                    timestamps_batch,
                                                                                    edge_idxs_batch,
                                                                                    n_neighbors)
-      pred_prob_batch = decoder(source_embedding).sigmoid()
-      pred_prob[s_idx: e_idx] = pred_prob_batch.cpu().numpy()
+      embedding_collector = torch.vstack([embedding_collector, source_embedding])
+      
+      if (k+1) % batch_interval == 0:
+        eval_res, eval_model = Simple_Regression(embedding_collector, label=labels[:e_idx], num_classes=10, project_model=eval_model, return_model=True)
+        metrics_result = dict_merge(metrics_result, eval_res)
 
-  auc_roc = roc_auc_score(data.labels, pred_prob)
-  return auc_roc
+  return metrics_result
