@@ -116,39 +116,38 @@ def dict_merge(d1: dict, d2: dict, k):
 
 
 eval_model: Union[torch.nn.Linear | None] = None
-def eval_node_classification(tgn, decoder, data, edge_idxs, batch_size, n_neighbors):
+def eval_node_classification(tgn: torch.nn.Linear, data, batch_size, n_neighbors: int, num_cls: int):
   global eval_model
   metrics_result = dict()
-  pred_prob = np.zeros(len(data.sources))
   num_instance = len(data.sources)
   num_batch = math.ceil(num_instance / batch_size)
   labels = data.labels[data.sources]
 
-  embedding_collector = torch.tensor([0])
+  device = 'cuda:{}'.format(0) if torch.cuda.is_available() else 'cpu'
+  embedding_collector = None
   batch_interval = num_batch // 4
 
-  with torch.no_grad():
-    decoder.eval()
-    tgn.eval()
-    for k in range(num_batch):
-      s_idx = k * batch_size
-      e_idx = min(num_instance, s_idx + batch_size)
+  tgn.eval()
+  for k in range(num_batch):
+    s_idx = k * batch_size
+    e_idx = min(num_instance, s_idx + batch_size)
 
-      sources_batch = data.sources[s_idx: e_idx]
-      destinations_batch = data.destinations[s_idx: e_idx]
-      timestamps_batch = data.timestamps[s_idx:e_idx]
-      edge_idxs_batch = edge_idxs[s_idx: e_idx]
+    sources_batch = data.sources[s_idx: e_idx]
+    destinations_batch = data.destinations[s_idx: e_idx]
+    timestamps_batch = data.timestamps[s_idx:e_idx]
+    edge_idxs_batch = data.edge_idxs[s_idx: e_idx]
 
-      source_embedding, destination_embedding, _ = tgn.compute_temporal_embeddings(sources_batch,
+    with torch.no_grad():
+        source_embedding, destination_embedding, _ = tgn.compute_temporal_embeddings(sources_batch,
                                                                                    destinations_batch,
                                                                                    destinations_batch,
                                                                                    timestamps_batch,
                                                                                    edge_idxs_batch,
                                                                                    n_neighbors)
-      embedding_collector = torch.vstack([embedding_collector, source_embedding])
+    embedding_collector = torch.vstack((embedding_collector, source_embedding)) if embedding_collector!=None else source_embedding
       
-      if (k+1) % batch_interval == 0:
-        eval_res, eval_model = Simple_Regression(embedding_collector, label=labels[:e_idx], num_classes=10, project_model=eval_model, return_model=True)
-        metrics_result = dict_merge(metrics_result, eval_res)
+    if batch_interval==0 or (k+1) % batch_interval == 0:
+        eval_res, eval_model = Simple_Regression(embedding_collector, label=labels[:e_idx], num_classes=num_cls, project_model=eval_model, return_model=True)
+        metrics_result = dict_merge(metrics_result, eval_res, k)
 
   return metrics_result

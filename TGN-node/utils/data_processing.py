@@ -97,11 +97,14 @@ def get_data_TGAT(dataset_name, snapshot: int, views: int) -> tuple[list[Data|in
         hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
         hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
 
+        edge_train_feat = full_data.edge_feat[train_mask]
+        edge_val_feat = full_data.edge_feat[val_mask]
+
         train_data = Data(full_data.sources[train_mask], full_data.destinations[train_mask], full_data.timestamps[train_mask],\
-                        full_data.edge_idxs[train_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat)
+                        full_data.edge_idxs[train_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat, edge_feat=edge_train_feat)
         
         val_data = Data(full_data.sources[val_mask], full_data.destinations[val_mask], full_data.timestamps[val_mask],\
-                        full_data.edge_idxs[val_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat)
+                        full_data.edge_idxs[val_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat, edge_feat=edge_val_feat)
         
         if single_graph or idxs == lenth-1:
             test_data = val_data
