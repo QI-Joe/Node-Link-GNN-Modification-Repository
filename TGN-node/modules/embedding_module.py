@@ -23,6 +23,8 @@ class EmbeddingModule(nn.Module):
     self.dropout = dropout
     self.embedding_dimension = embedding_dimension
     self.device = device
+    self.node_features_backup = None
+    self.edge_feature_backup = None
 
   def compute_embedding(self, memory, source_nodes, timestamps, n_layers, n_neighbors=20, time_diffs=None,
                         use_time_proj=True):
@@ -42,6 +44,10 @@ class EmbeddingModule(nn.Module):
     # self.neighbor_finder = self.neighbor_finder_backup
     self.node_features = self.node_features_backup
     self.edge_features = self.edge_feature_backup
+
+  def backup_release(self):
+    self.node_features_backup = None
+    self.edge_feature_backup = None
 
 
 
@@ -127,6 +133,14 @@ class GraphEmbedding(EmbeddingModule):
         source_nodes,
         timestamps,
         n_neighbors=n_neighbors)
+
+      if neighbors.max() > self.node_features.shape[0]:
+        raise ValueError("neighbors raise problem")
+      
+      if edge_idxs.max() > self.edge_features.shape[0]:
+        print("neighbor edge size:",edge_idxs.max(), "Edge availabel size", self.edge_features.shape[0])
+        print(f"max source node size {source_nodes.max()}")
+        raise ValueError("edge idx raise problem")
 
       neighbors_torch = torch.from_numpy(neighbors).long().to(self.device)
 

@@ -5,9 +5,10 @@ import torch
 from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
 from torch.optim import Adam
 from typing import Union
+from model.tgn import TGN
 
 
-def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_size=200):
+def eval_edge_prediction(model: TGN, negative_edge_sampler, data, n_neighbors, batch_size=200):
   # Ensures the random sampler uses a seed for evaluation (i.e. we sample always the same
   # negatives for validation / test set)
   assert negative_edge_sampler.seed is not None
@@ -116,14 +117,14 @@ def dict_merge(d1: dict, d2: dict, k):
 
 
 eval_model: Union[torch.nn.Linear | None] = None
-def eval_node_classification(tgn: torch.nn.Linear, data, batch_size, n_neighbors: int, num_cls: int):
+def eval_node_classification(tgn: TGN, data, batch_size, n_neighbors: int, num_cls: int):
   global eval_model
   metrics_result = dict()
   num_instance = len(data.sources)
   num_batch = math.ceil(num_instance / batch_size)
   labels = data.labels[data.sources]
 
-  device = 'cuda:{}'.format(0) if torch.cuda.is_available() else 'cpu'
+#   device = 'cuda:{}'.format(0) if torch.cuda.is_available() else 'cpu'
   embedding_collector = None
   batch_interval = num_batch // 4
 

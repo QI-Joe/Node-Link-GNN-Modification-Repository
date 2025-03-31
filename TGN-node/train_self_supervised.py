@@ -23,11 +23,11 @@ parser.add_argument('--bs', type=int, default=200, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
-parser.add_argument('--n_epoch', type=int, default=50, help='Number of epochs')
+parser.add_argument('--n_epoch', type=int, default=1, help='Number of epochs')
 parser.add_argument('--n_layer', type=int, default=1, help='Number of network layers')
 parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate')
 parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
-parser.add_argument('--snapshot', type=int, default=20, help='how many temporal graphs')
+parser.add_argument('--snapshot', type=int, default=10, help='how many temporal graphs')
 parser.add_argument('--view', type=int, default=5, help="acutally running graphs")
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
@@ -87,11 +87,11 @@ MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 SNAPSHOT = args.snapshot
 VIEW = args.view
-epoch_tester = 10
+epoch_tester = 1
 
 
 ### Extract data for training, validation and testing
-temporaloader, full_graph_nodes, full_graph_feat, full_edge_number = get_data_TGAT(DATA,snapshot=SNAPSHOT, views=VIEW)
+temporaloader, full_graph_nodes, full_graph_feat, full_edge_number = get_data_TGAT(DATA,snapshot=SNAPSHOT, views=SNAPSHOT-2)
 
 num_classes = temporaloader[-1][0].labels.max()+1
 snapshot_list = list()
@@ -102,7 +102,14 @@ rscore.set_up_logger(name="time_logger")
 rpresent.set_up_logger()
 rpresent.record_start()
 
-for i in range(1):
+def compute_value(x, threshold):
+  lists = list()
+  for i, v in enumerate(x):
+    if (v>threshold).any():
+      lists.append(x[i])
+  return lists
+
+for i in range(VIEW):
   full_data, train_data, val_data, test_data, n_nodes, n_edges = temporaloader[i]
   # Initialize training neighbor finder to retrieve temporal graph
   train_ngh_finder = get_neighbor_finder(train_data, args.uniform)
@@ -118,20 +125,18 @@ for i in range(1):
   train_rand_sampler = RandEdgeSampler(train_data.sources, train_data.destinations)
   val_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=0)
   test_rand_sampler = RandEdgeSampler(test_data.sources, test_data.destinations, seed=2)
-  
-  src_label, dst_label = train_data.labels[train_data.sources], train_data.labels[train_data.destinations]
-
 
   # Set device
   device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
   device = torch.device(device_string)
-
+  # device = torch.device("cpu")
+  
   # Compute time statistics
   mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst = \
     compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
 
 
-  node_features, edge_features = train_data.node_feat, train_data.edge_feat
+  node_features, edge_features = full_data.node_feat, full_data.edge_feat
 
   # Initialize Model
   tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_features,
@@ -154,11 +159,19 @@ for i in range(1):
   optimizer = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
   tgn = tgn.to(device)
 
+  src_label, dst_label = train_data.labels[train_data.sources], train_data.labels[train_data.destinations]
+  print(f"\n\nthe max node idx is {max(full_data.sources.max(), full_data.destinations.max())} at snapshot {i}")
+  print(f"max node idx of val data {val_data.node_feat.shape} and max node idx of test data {test_data.node_feat.shape}")
+  print(f"checking the intern node memory {tgn.embedding_module.node_features.shape}")
+  if tgn.embedding_module.node_features_backup != None:
+    print(f"checking the intern node back memory {tgn.embedding_module.node_features_backup.shape}")
+  print("\n\n")
+
   num_instance = len(train_data.sources)
   num_batch = math.ceil(num_instance / BATCH_SIZE)
 
   print('num of training instances: {}'.format(num_instance))
-  print('num of batches per epoch: {}'.format(num_batch))
+  # print('num of batches per epoch: {}'.format(num_batch))
   idx_list = np.arange(num_instance)
 
   new_nodes_val_aps = []
@@ -242,11 +255,28 @@ for i in range(1):
       # validation on unseen nodes
       train_memory_backup = tgn.memory.backup_memory()
 
-    val_metrics = eval_node_classification(tgn=tgn,
+
+    max_node = max(val_data.sources.max(), val_data.destinations.max())
+    max_node_full = max(full_data.sources.max(), full_data.destinations.max())
+    internal_tolearance = tgn.embedding_module.node_features.shape[0]
+    assert max_node<full_data.node_feat.shape[0] or max_node<val_data.node_feat.shape[0], f"max node idx {max_node} larger than node features {full_data.node_feat.shape[0]}"
+    assert  max_node_full<full_data.node_feat.shape[0] or max_node_full<internal_tolearance, f"max current full node snapshot idx {max_node_full} larger than given node features {internal_tolearance, full_data.node_feat.shape[0]}"
+    assert full_data.edge_idxs.max() >= val_data.edge_idxs.max(), f"val data edge idx larger than full data, check it out"
+
+    if i >= 3: 
+      print("wearehere")
+    try: 
+      val_metrics = eval_node_classification(tgn=tgn,
                                            num_cls=num_classes,
                                           batch_size=200,
                                           data=val_data,
                                           n_neighbors=NUM_NEIGHBORS)
+    except RuntimeError as error:
+      print("\nThe max node idx is", max_node, "Current model node embedding is", tgn.embedding_module.node_features.shape)
+      print("\nCurrent full data max node idx is", full_data.node_feat.shape)
+      print(f"\n\nthe max node idx is {max_node_full} at snapshot {i}")
+      print(f"max node idx of val data {val_data.node_feat.shape} and max node idx of test data {test_data.node_feat.shape}")
+      print(f"checking the intern node memory {tgn.embedding_module.node_features.shape}")
     train_losses.append(np.mean(m_loss))
 
     total_epoch_time = time.time() - start_epoch
@@ -265,20 +295,21 @@ for i in range(1):
       print(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
       tgn.eval()
       break
-    tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
+    # tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
 
-    test_metrics = eval_node_classification(tgn=tgn,
-                                               num_cls=num_classes,
-                                                batch_size=200,
-                                                data=test_data,
-                                                n_neighbors=NUM_NEIGHBORS)
+    # test_metrics = eval_node_classification(tgn=tgn,
+    #                                            num_cls=num_classes,
+    #                                             batch_size=200,
+    #                                             data=test_data,
+    #                                             n_neighbors=NUM_NEIGHBORS)
 
-    tgn.restore_test_emb()
-    test_metrics["val_acc"] = val_metrics["accuracy"]
-    score_recorder.append(test_metrics)
+    # tgn.restore_test_emb()
+    # tgn.embedding_module.backup_release()
+    # test_metrics["val_acc"] = val_metrics["accuracy"]
+    # score_recorder.append(test_metrics)
 
-    print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format("TGN", \
-                    test_metrics["accuracy"], test_metrics["precision"], test_metrics["recall"]))
+    # print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format("TGN", \
+    #                 test_metrics["accuracy"], test_metrics["precision"], test_metrics["recall"]))
 
 
   # Training has finished, we have loaded the best model, and we want to backup its current
@@ -294,10 +325,10 @@ for i in range(1):
                                                 batch_size=200,
                                                 data=test_data,
                                                 n_neighbors=NUM_NEIGHBORS)
-  
+  test_metrics["val_acc"] = val_metrics["accuracy"]
   score_recorder.append(test_metrics)
 
-  rpresent.score_record(temporal_score_=score_recorder, node_size=full_data.unique_nodes, temporal_idx=i, epoch_interval=epoch_tester)
+  rpresent.score_record(temporal_score_=score_recorder, node_size=full_data.n_unique_nodes, temporal_idx=i, epoch_interval=epoch_tester)
 
 rpresent.record_end()
 rscore.record_end()

@@ -84,7 +84,6 @@ class TimeRecord(object):
     def score_statement(self, single_: dict[str, float], prefix: str = ""):
         return (
             prefix +
-            f"Train Acc:        {round(single_['train_acc'], 4):<8} | "
             f"Val Acc:          {round(single_['val_acc'], 4):<8} | "
             f"Test Acc:         {round(single_['test_acc'], 4):<8} | "
             f"Strict Test Acc:  {round(single_['accuracy'], 4):<8}\n"
@@ -122,7 +121,6 @@ class TimeRecord(object):
     def record_statement(self, given: dict, prefix: str = ""):
         return (
             prefix + 
-            f"{round(given['train_acc'], 8)} " 
             f"{round(given['val_acc'], 8)} "
             f"{round(given['test_acc'], 8)} " 
             f"{round(given['accuracy'], 8)} " 
