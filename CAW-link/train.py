@@ -6,34 +6,46 @@ from sklearn.metrics import average_precision_score
 from sklearn.metrics import f1_score
 from sklearn.metrics import roc_auc_score
 from eval import *
-import logging
-logging.getLogger('matplotlib.font_manager').disabled = True
-logging.getLogger('matplotlib.ticker').disabled = True
+from module import CAWN
+from torch import Tensor
+from time_evaluation import TimeRecord
+from torch.optim import Adam
 
 
-def train_val(train_val_data, model, mode, bs, epochs, criterion, optimizer, early_stopper, ngh_finders, rand_samplers, logger):
+epoch_tester: int = 10
+def train_val(train_val_data: tuple[tuple[np.ndarray]], model: CAWN, mode, bs, epochs, \
+              criterion: torch.nn.CrossEntropyLoss, optimizer: Adam, num_cls, \
+              early_stopper, ngh_finders, rand_samplers, logger: TimeRecord):
     # unpack the data, prepare for the training
+    global epoch_tester
+
     train_data, val_data = train_val_data
+
     train_src_l, train_dst_l, train_ts_l, train_e_idx_l, train_label_l = train_data
     val_src_l, val_dst_l, val_ts_l, val_e_idx_l, val_label_l = val_data
+
     train_rand_sampler, val_rand_sampler = rand_samplers
     partial_ngh_finder, full_ngh_finder = ngh_finders
+
     if mode == 't':  # transductive
         model.update_ngh_finder(full_ngh_finder)
     elif mode == 'i':  # inductive
         model.update_ngh_finder(partial_ngh_finder)
     else:
         raise ValueError('training mode {} not found.'.format(mode))
+    
     device = model.n_feat_th.data.device
     num_instance = len(train_src_l)
     num_batch = math.ceil(num_instance / bs)
-    logger.info('num of training instances: {}'.format(num_instance))
-    logger.info('num of batches per epoch: {}'.format(num_batch))
+    print('num of training instances: {}'.format(num_instance))
+    print('num of batches per epoch: {}'.format(num_batch))
     idx_list = np.arange(num_instance)
+    
     for epoch in range(epochs):
-        acc, ap, f1, auc, m_loss = [], [], [], [], []
+        trian_acc_src, train_acc_dst, m_loss = [], [], []
+        
         np.random.shuffle(idx_list)  # shuffle the training samples for every epoch
-        logger.info('start {} epoch'.format(epoch))
+        print('start {} epoch'.format(epoch))
         for k in tqdm(range(num_batch)):
             # generate training mini-batch
             s_idx = k * bs
@@ -73,11 +85,11 @@ def train_val(train_val_data, model, mode, bs, epochs, criterion, optimizer, ear
         # validation phase use all information
         val_acc, val_ap, val_f1, val_auc = eval_one_epoch('val for {} nodes'.format(mode), model, val_rand_sampler, val_src_l,
                                                           val_dst_l, val_ts_l, val_label_l, val_e_idx_l)
-        logger.info('epoch: {}:'.format(epoch))
-        logger.info('epoch mean loss: {}'.format(np.mean(m_loss)))
-        logger.info('train acc: {}, val acc: {}'.format(np.mean(acc), val_acc))
-        logger.info('train auc: {}, val auc: {}'.format(np.mean(auc), val_auc))
-        logger.info('train ap: {}, val ap: {}'.format(np.mean(ap), val_ap))
+        print('epoch: {}:'.format(epoch))
+        print('epoch mean loss: {}'.format(np.mean(m_loss)))
+        print('train acc: {}, val acc: {}'.format(np.mean(acc), val_acc))
+        print('train auc: {}, val auc: {}'.format(np.mean(auc), val_auc))
+        print('train ap: {}, val ap: {}'.format(np.mean(ap), val_ap))
         if epoch == 0:
             # save things for data anaysis
             checkpoint_dir = '/'.join(model.get_checkpoint_path(0).split('/')[:-1])

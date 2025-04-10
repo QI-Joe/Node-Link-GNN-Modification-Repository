@@ -10,6 +10,7 @@ from position import *
 from torch.nn import MultiheadAttention
 import torch.nn.functional as F
 from torch import Tensor
+from graph import NeighborFinder
 
 PRECISION = 5
 POS_DIM_ALTER = 100
@@ -408,9 +409,10 @@ class AttnModel(torch.nn.Module):
 
 
 class CAWN(torch.nn.Module):
-    def __init__(self, n_feat, e_feat, num_classes, agg='tree',
+    def __init__(self, num_classes, agg='tree',
                  attn_mode='prod', use_time='time', attn_agg_method='attn', 
-                 pos_dim=0, pos_enc='spd', walk_pool='attn', walk_n_head=8, walk_mutual=False,
+                 node_dim = 0, edge_dim = 0, pos_dim=0, pos_enc='spd', 
+                 walk_pool='attn', walk_n_head=8, walk_mutual=False,
                  num_layers=3, n_head=4, drop_out=0.1, num_neighbors=20, cpu_cores=1,
                  verbosity=1, get_checkpoint_path=None, walk_linear_out=False):
         super(CAWN, self).__init__()
@@ -423,12 +425,12 @@ class CAWN(torch.nn.Module):
         self.ngh_finder = None
 
         # features
-        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)), requires_grad=False)
-        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)), requires_grad=False)
+        # self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)), requires_grad=False)
+        # self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)), requires_grad=False)
 
         # dimensions of 4 elements: node, edge, time, position
-        self.feat_dim = self.n_feat_th.shape[1]  # node feature dimension
-        self.e_feat_dim = self.e_feat_th.shape[1]  # edge feature dimension
+        self.feat_dim = node_dim  # node feature dimension
+        self.e_feat_dim = edge_dim  # edge feature dimension
         self.time_dim = self.feat_dim  # default to be time feature dimension
         self.pos_dim = pos_dim  # position feature dimension
         self.pos_enc = pos_enc
@@ -448,9 +450,9 @@ class CAWN(torch.nn.Module):
         self.dropout_p = drop_out
 
         # embedding layers and encoders
-        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True)
+        # self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True)
         # self.source_edge_embed = nn.parameter(torch.tensor()self.e_feat_dim)
-        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True)
+        # self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True)
         self.time_encoder = self.init_time_encoder(use_time, seq_len=self.num_neighbors[0])
         self.position_encoder = PositionEncoder(enc_dim=self.pos_dim, num_layers=self.num_layers, ngh_finder=self.ngh_finder,
                                                 cpu_cores=cpu_cores, verbosity=verbosity, logger=self.logger, enc=self.pos_enc)
@@ -473,6 +475,34 @@ class CAWN(torch.nn.Module):
         self.flag_for_cur_edge = True  # flagging whether the current edge under computation is real edges, for data analysis
         self.common_node_percentages = {'pos': [], 'neg': []}
         self.walk_encodings_scores = {'encodings': [], 'scores': []}
+
+    def temproal_update(self, ngh_finder, n_feat, e_feat):
+        self.ngh_finder: NeighborFinder = ngh_finder
+        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)))
+        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)))
+        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True)
+        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True)
+
+    def train_val_backup(self):
+        self.n_feat_th_backup = self.n_feat_th
+        self.e_feat_th_backup = self.e_feat_th
+        self.edge_raw_embed_backup = self.edge_raw_embed
+        self.node_raw_embed_backup = self.node_raw_embed
+
+    def train_val_emb_restore(self):
+        self.n_feat_th = self.n_feat_th_backup
+        self.e_feat_th = self.e_feat_th_backup
+        self.edge_raw_embed = self.edge_raw_embed_backup
+        self.node_raw_embed = self.node_raw_embed_backup
+
+    def test_emb_update(self, ngh_finder, n_feat, e_feat):
+        self.ngh_finder: NeighborFinder = ngh_finder
+        self.train_val_backup()
+        device = self.n_feat_th.device
+        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)).to(device))
+        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)).to(device))
+        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True).to(device)
+        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True).to(device)
 
     def init_attn_model_list(self, attn_agg_method, attn_mode, n_head, drop_out):
         if attn_agg_method == 'attn':

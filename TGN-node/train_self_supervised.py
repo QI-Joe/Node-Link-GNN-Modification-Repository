@@ -295,21 +295,21 @@ for i in range(VIEW):
       print(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
       tgn.eval()
       break
-    # tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
+    tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
 
-    # test_metrics = eval_node_classification(tgn=tgn,
-    #                                            num_cls=num_classes,
-    #                                             batch_size=200,
-    #                                             data=test_data,
-    #                                             n_neighbors=NUM_NEIGHBORS)
+    test_metrics = eval_node_classification(tgn=tgn,
+                                               num_cls=num_classes,
+                                                batch_size=200,
+                                                data=test_data,
+                                                n_neighbors=NUM_NEIGHBORS)
 
-    # tgn.restore_test_emb()
-    # tgn.embedding_module.backup_release()
-    # test_metrics["val_acc"] = val_metrics["accuracy"]
-    # score_recorder.append(test_metrics)
+    tgn.restore_test_emb()
+    tgn.embedding_module.backup_release()
+    test_metrics["val_acc"] = val_metrics["accuracy"]
+    score_recorder.append(test_metrics)
 
-    # print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format("TGN", \
-    #                 test_metrics["accuracy"], test_metrics["precision"], test_metrics["recall"]))
+    print('Test statistics: {} all nodes -- acc: {:.4f}, prec: {:.4f}, recall: {:.4f}'.format("TGN", \
+                    test_metrics["accuracy"], test_metrics["precision"], test_metrics["recall"]))
 
 
   # Training has finished, we have loaded the best model, and we want to backup its current
