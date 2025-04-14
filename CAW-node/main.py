@@ -103,7 +103,7 @@ for sp in range(VIEW):
         mask_node_set = list(mask_node_set)
         
         # align the node from t to t1
-        t2t1_node: list[int] = t2t1_node_alignment(mask_node_set, temporalgraph, t1_temporal)
+        t1_new_new_mask, t1_pure_old_mask, total_num_nodes = t2t1_node_alignment(mask_node_set, temporalgraph, t1_temporal)
 
         mask_src_flag = np.isin(src_l, mask_node_set).astype(np.int8)
         mask_dst_flag = np.isin(dst_l, mask_node_set).astype(np.int8)
@@ -112,17 +112,15 @@ for sp in range(VIEW):
         valid_train_flag = (e_idx_l <= val_time) * (none_mask_node_flag > 0.5)
         valid_val_flag = (e_idx_l > val_time) * (none_mask_node_flag > 0.5)  # both train and val edges can not contain any masked nodes
         
-        mask_src_flag_t1 = np.isin(t1_temporal.edge_index[0], t2t1_node).astype(np.int8)
-        mask_dst_flag_t1 = np.isin(t1_temporal.edge_index[1], t2t1_node).astype(np.int8)
-        t1_none_mask_node_flag = (1 - mask_src_flag_t1) * (1 - mask_dst_flag_t1)
-        valid_test_flag = (none_mask_node_flag < 0.5)  # test edges must contain at least one masked node
+        t1_new_mask = (t1_pure_old_mask < 0.5)  # test edges must contain at least one masked node
         
-        # for inductive learning, temporal graph should not be considered...
-        valid_test_new_new_flag = mask_src_flag * mask_dst_flag 
         # new_flag: node intersection in mask_src_flag and mask_dst_flag 
-        valid_test_new_old_flag = (valid_test_flag.astype(int) - valid_test_new_new_flag.astype(int)).astype(bool)
+        valid_test_new_old_flag = (t1_new_mask.astype(int) - t1_new_new_mask.astype(int)).astype(bool)
         # old_flag: node union - node intersection in mask_src_flag and mask_dst_flag
-        print('Sampled {} nodes (10 %) which are masked in training and reserved for testing...'.format(len(mask_node_set)))
+        print('Sampled {} nodes (10 %) and all new nodes {} which are masked in training and reserved for testing'.format(len(mask_node_set), total_num_nodes))
+        tforder, ttf = np.unique(t1_new_mask, return_counts=True)
+        t1tf = np.unique(t1_new_new_mask, return_counts=True)[1]
+        print('All the edges pending in order of {} for validation are {} new-new pure inducitve and {} new-old inductive learning'.format(tforder, ttf, t1tf))
 
     # split data according to the mask
     src_label, edge_label = label_l[src_l], label_l[dst_l]
@@ -139,7 +137,7 @@ for sp in range(VIEW):
         
     if args.mode == 'i':
         # need to be modified
-        test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_e_idx_new_new_l, test_label_new_new_l = src_l[valid_test_new_new_flag], dst_l[valid_test_new_new_flag], ts_l[valid_test_new_new_flag], e_idx_l[valid_test_new_new_flag], label_l[valid_test_new_new_flag]
+        test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_e_idx_new_new_l, test_label_new_new_l = src_l[t1_new_new_mask], dst_l[t1_new_new_mask], ts_l[t1_new_new_mask], e_idx_l[t1_new_new_mask], label_l[t1_new_new_mask]
         test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_e_idx_new_old_l, test_label_new_old_l = src_l[valid_test_new_old_flag], dst_l[valid_test_new_old_flag], ts_l[valid_test_new_old_flag], e_idx_l[valid_test_new_old_flag], label_l[valid_test_new_old_flag]
 
     # create two neighbor finders to handle graph extraction.

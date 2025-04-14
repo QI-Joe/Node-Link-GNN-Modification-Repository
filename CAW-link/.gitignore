@@ -19,3 +19,4 @@ README.md
 best_models/
 saved_checkpoints/
 *.ipynb
+logs/

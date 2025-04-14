@@ -1,0 +1,5 @@
+torch-geometric
+numpy
+pandas
+scikit-learn
+multipledispatch

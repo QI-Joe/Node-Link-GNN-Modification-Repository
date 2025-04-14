@@ -1,15 +1,14 @@
-import pandas as pd
 from log import *
 from eval import *
 from utils import *
-from train import *
-#import numba
 from module import CAWN
 from graph import NeighborFinder
 import resource
-from my_dataloader import Temporal_Dataloader, Temporal_Splitting, Dynamic_Dataloader, data_load, t2t1_node_alignment
+from my_dataloader import Temporal_Splitting, Dynamic_Dataloader, data_load, t2t1_node_alignment
+from sklearn.metrics import roc_auc_score
 import copy
 from time_evaluation import TimeRecord
+from torch import Tensor
 
 args, sys_argv = get_args()
 rscore, rpresent = TimeRecord(model_name="CAW"), TimeRecord(model_name="CAW")
@@ -74,7 +73,7 @@ for sp in range(VIEW):
     
     max_idx = max(src_l.max(), dst_l.max()) + 1
     assert(np.unique(np.stack([src_l, dst_l])).shape[0] == max_idx or (not math.isclose(1, args.data_usage)))  # all nodes except node 0 should appear and be compactly indexed
-    assert(n_feat.shape[0] == max_idx + 1 or (not math.isclose(1, args.data_usage)))  # the nodes need to map one-to-one to the node feat matrix
+    assert(n_feat.shape[0] == max_idx or (not math.isclose(1, args.data_usage)))  # the nodes need to map one-to-one to the node feat matrix
 
     # split and pack the data by generating valid train/val/test mask according to the "mode"
     val_time = int(temporalgraph.edge_attr.shape[0]*0.85)
@@ -94,9 +93,8 @@ for sp in range(VIEW):
         mask_node_set = set(random.sample(sorted(set(src_l[e_idx_l > val_time]).union(set(dst_l[e_idx_l > val_time]))), int(0.1 * num_total_unique_nodes)))
         mask_node_set = list(mask_node_set)
         
-
         # align the node from t to t1
-        t2t1_node: list[int] = t2t1_node_alignment(mask_node_set, temporalgraph, t1_temporal)
+        t1_new_new_mask, t1_pure_old_mask, total_num_nodes = t2t1_node_alignment(mask_node_set, temporalgraph, t1_temporal)
 
         mask_src_flag = np.isin(src_l, mask_node_set).astype(np.int8)
         mask_dst_flag = np.isin(dst_l, mask_node_set).astype(np.int8)
@@ -105,17 +103,15 @@ for sp in range(VIEW):
         valid_train_flag = (e_idx_l <= val_time) * (none_mask_node_flag > 0.5)
         valid_val_flag = (e_idx_l > val_time) * (none_mask_node_flag > 0.5)  # both train and val edges can not contain any masked nodes
         
-        mask_src_flag_t1 = np.isin(t1_temporal.edge_index[0], t2t1_node).astype(np.int8)
-        mask_dst_flag_t1 = np.isin(t1_temporal.edge_index[1], t2t1_node).astype(np.int8)
-        t1_none_mask_node_flag = (1 - mask_src_flag_t1) * (1 - mask_dst_flag_t1)
-        valid_test_flag = (none_mask_node_flag < 0.5)  # test edges must contain at least one masked node
+        t1_new_mask = (t1_pure_old_mask < 0.5)  # test edges must contain at least one masked node
         
-        # for inductive learning, temporal graph should not be considered...
-        valid_test_new_new_flag = mask_src_flag * mask_dst_flag 
         # new_flag: node intersection in mask_src_flag and mask_dst_flag 
-        valid_test_new_old_flag = (valid_test_flag.astype(int) - valid_test_new_new_flag.astype(int)).astype(bool)
+        valid_test_new_old_flag = (t1_new_mask.astype(int) - t1_new_new_mask.astype(int)).astype(bool)
         # old_flag: node union - node intersection in mask_src_flag and mask_dst_flag
-        print('Sampled {} nodes (10 %) which are masked in training and reserved for testing...'.format(len(mask_node_set)))
+        print('Sampled {} nodes (10 %) and all new nodes {} which are masked in training and reserved for testing'.format(len(mask_node_set), total_num_nodes))
+        tforder, ttf = np.unique(t1_new_mask, return_counts=True)
+        t1tf = np.unique(t1_new_new_mask, return_counts=True)[1]
+        print('All the edges pending in order of {} for validation are {} new-new pure inducitve and {} new-old inductive learning'.format(tforder, ttf, t1tf))
 
     # split data according to the mask
     src_label, edge_label = label_l[src_l], label_l[dst_l]
@@ -128,6 +124,11 @@ for sp in range(VIEW):
     test_src_l, test_dst_l, test_ts_l, test_e_idx_l = t1_temporal.edge_index[0], \
     t1_temporal.edge_index[1], t1_temporal.edge_attr, np.arange(t1_temporal.edge_index.shape[1])
     test_label_l = (t1_temporal.y[t1_temporal.edge_index[0]], t1_temporal.y[t1_temporal.edge_index[1]])
+    test_n_feat, test_e_feat = t1_temporal.node_pos, t1_temporal.edge_pos
+
+    if args.mode == 'i':
+        test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_e_idx_new_new_l, test_label_new_new_l = test_src_l[t1_new_new_mask], test_dst_l[t1_new_new_mask], test_ts_l[t1_new_new_mask], test_e_idx_l[t1_new_new_mask], test_label_l[t1_new_new_mask]
+        test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_e_idx_new_old_l, test_label_new_old_l = test_src_l[valid_test_new_old_flag], test_dst_l[valid_test_new_old_flag], test_ts_l[valid_test_new_old_flag], test_e_idx_l[valid_test_new_old_flag], test_label_l[valid_test_new_old_flag]
 
     # create two neighbor finders to handle graph extraction.
     # for transductive mode all phases use full_ngh_finder, for inductive node train/val phases use the partial one
@@ -145,12 +146,20 @@ for sp in range(VIEW):
         partial_adj_list[src].append((dst, eidx, ts))
         partial_adj_list[dst].append((src, eidx, ts))
     partial_ngh_finder = NeighborFinder(partial_adj_list, bias=args.bias, use_cache=NGH_CACHE, sample_method=args.pos_sample)
+    
+    max_test_idx = max(test_src_l.max(), test_dst_l.max()) + 1
+    full_test_adj = [[] for _ in range(max_test_idx+1)]
+    for esrc, edst, eidx, ets in zip(test_src_l, test_dst_l, test_e_idx_l, test_ts_l):
+        full_test_adj[esrc].append((edst, eidx,ets))
+        full_test_adj[edst].append((esrc, eidx, ets))
+    full_test_ngh_finder = NeighborFinder(full_test_adj, bias = args.bias, use_cache=NGH_CACHE, sample_method=args.pos_sample)
+
     ngh_finders = partial_ngh_finder, full_ngh_finder
 
     # create random samplers to generate train/val/test instances
     train_rand_sampler = RandEdgeSampler((train_src_l, ), (train_dst_l, ))
     val_rand_sampler = RandEdgeSampler((train_src_l, val_src_l), (train_dst_l, val_dst_l))
-    test_rand_sampler = RandEdgeSampler((train_src_l,), (train_dst_l,))
+    test_rand_sampler = RandEdgeSampler((test_src_l,), (test_dst_l,))
 
     # multiprocessing memory setting
     rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
@@ -185,11 +194,12 @@ for sp in range(VIEW):
     
     score_record = list()
     for epoch in range(NUM_EPOCH):
-        trian_acc_src, train_acc_dst, m_loss = [], [], []
+        rpresent.epoch_record()
+        acc, ap, m_loss, auc = [], [], [], []
         
         np.random.shuffle(idx_list)  # shuffle the training samples for every epoch
         print('start {} epoch'.format(epoch))
-        for k in tqdm(range(num_batch)):
+        for k in range(num_batch):
             # generate training mini-batch
             s_idx = k * BATCH_SIZE
             e_idx = min(num_instance - 1, s_idx + BATCH_SIZE)
@@ -199,7 +209,7 @@ for sp in range(VIEW):
             src_l_cut, dst_l_cut = train_src_l[batch_idx], train_dst_l[batch_idx]
             ts_l_cut = train_ts_l[batch_idx]
             e_l_cut = train_e_idx_l[batch_idx]
-            label_l_cut = train_label_l[batch_idx]  # currently useless since we are not predicting edge labels
+            # label_l_cut = train_label_l[batch_idx]  # currently useless since we are not predicting edge labels
             size = len(src_l_cut)
             src_l_fake, dst_l_fake = train_rand_sampler.sample(size)
 
@@ -225,54 +235,47 @@ for sp in range(VIEW):
                     # f1.append(f1_score(true_label, pred_label))
                     m_loss.append(loss.item())
                     auc.append(roc_auc_score(true_label, pred_score))
+        
+        rpresent.epoch_end(BATCH_SIZE)
+        if (epoch+1) % epoch_tester == 0:
+            # validation phase use all information
+            val_acc, val_ap, val_f1, val_auc = eval_one_epoch('val for {} nodes'.format(mode), cawn, val_rand_sampler, val_src_l,
+                                                            val_dst_l, val_ts_l, val_label_l, val_e_idx_l)
+            print('epoch: {}:'.format(epoch))
+            print('epoch mean loss: {}'.format(np.mean(m_loss)))
+            print('train acc: {}, val acc: {}'.format(np.mean(acc), val_acc))
+            print('train auc: {}, val auc: {}'.format(np.mean(auc), val_auc))
+            print('train ap: {}, val ap: {}'.format(np.mean(ap), val_ap))
 
-        # validation phase use all information
-        val_acc, val_ap, val_f1, val_auc = eval_one_epoch('val for {} nodes'.format(mode), model, val_rand_sampler, val_src_l,
-                                                          val_dst_l, val_ts_l, val_label_l, val_e_idx_l)
-        print('epoch: {}:'.format(epoch))
-        print('epoch mean loss: {}'.format(np.mean(m_loss)))
-        print('train acc: {}, val acc: {}'.format(np.mean(acc), val_acc))
-        print('train auc: {}, val auc: {}'.format(np.mean(auc), val_auc))
-        print('train ap: {}, val ap: {}'.format(np.mean(ap), val_ap))
-        if epoch == 0:
-            # save things for data anaysis
-            checkpoint_dir = '/'.join(model.get_checkpoint_path(0).split('/')[:-1])
-            model.ngh_finder.save_ngh_stats(checkpoint_dir)  # for data analysis
-            model.save_common_node_percentages(checkpoint_dir)
+            # early stop check and checkpoint saving
+            if early_stopper.early_stop_check(val_ap):
+                print('No improvment over {} epochs, stop training'.format(early_stopper.max_round))
+                print(f'Loading the best model at epoch {early_stopper.best_epoch}')
+                print(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
+                break
 
-        # early stop check and checkpoint saving
-        if early_stopper.early_stop_check(val_ap):
-            logger.info('No improvment over {} epochs, stop training'.format(early_stopper.max_round))
-            logger.info(f'Loading the best model at epoch {early_stopper.best_epoch}')
-            best_checkpoint_path = model.get_checkpoint_path(early_stopper.best_epoch)
-            model.load_state_dict(torch.load(best_checkpoint_path))
-            logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
-            model.eval()
-            break
-        else:
-            torch.save(model.state_dict(), model.get_checkpoint_path(epoch))
+            # final testing
+            cawn.test_emb_update(full_test_ngh_finder, test_n_feat, test_e_feat)  # remember that testing phase should always use the full neighbor finder
+            test_acc, test_ap, test_f1, test_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, test_e_idx_l)
+            print('Test statistics: {} all nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_acc, test_auc, test_ap))
+            test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc = [-1]*6
 
-    # start train and val phases
-    train_val(train_val_data, cawn, args.mode, BATCH_SIZE, NUM_EPOCH, criterion, optimizer, early_stopper, ngh_finders, rand_samplers, logger)
+            if args.mode == 'i':
+                test_new_new_acc, test_new_new_ap, test_new_new_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_label_new_new_l, test_e_idx_new_new_l)
+                print('Test statistics: {} new-new nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_new_new_acc, test_new_new_auc,test_new_new_ap ))
+                test_new_old_acc, test_new_old_ap, test_new_old_f1, test_new_old_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_label_new_old_l, test_e_idx_new_old_l)
+                print('Test statistics: {} new-old nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_new_old_acc, test_new_old_auc, test_new_old_ap))
 
-    # final testing
-    cawn.update_ngh_finder(full_ngh_finder)  # remember that testing phase should always use the full neighbor finder
-    test_acc, test_ap, test_f1, test_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, test_e_idx_l)
-    logger.info('Test statistics: {} all nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_acc, test_auc, test_ap))
-    test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc = [-1]*6
-    if args.mode == 'i':
-        test_new_new_acc, test_new_new_ap, test_new_new_f1, test_new_new_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_label_new_new_l, test_e_idx_new_new_l)
-        logger.info('Test statistics: {} new-new nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_new_new_acc, test_new_new_auc,test_new_new_ap ))
-        test_new_old_acc, test_new_old_ap, test_new_old_f1, test_new_old_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_label_new_old_l, test_e_idx_new_old_l)
-        logger.info('Test statistics: {} new-old nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_new_old_acc, test_new_old_auc, test_new_old_ap))
 
-    # save model
-    logger.info('Saving CAWN model ...')
-    torch.save(cawn.state_dict(), best_model_path)
-    logger.info('CAWN model saved')
+            cawn.train_val_emb_restore()
+    """
+    TODO: Modify time_evaluation.py to fit for new metrics testing result
+    """
 
-    # save one line result
-    save_oneline_result('log/', args, [test_acc, test_auc, test_ap, test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc])
-    # save walk_encodings_scores
-    # checkpoint_dir = '/'.join(cawn.get_checkpoint_path(0).split('/')[:-1])
-    # cawn.save_walk_encodings_scores(checkpoint_dir)
+    temporaloader.update_event(sp)
+    rpresent.score_record(temporal_score_=score_record, node_size=temporalgraph.num_nodes, temporal_idx=sp, epoch_interval=epoch_tester)
+    snapshot_list.append(score_record)
+
+rpresent.record_end()
+rscore.record_end()
+rscore.fast_processing(snapshot_list)
