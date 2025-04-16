@@ -167,11 +167,13 @@ for sp in range(VIEW):
 
     # model initialization
     device = torch.device('cuda:{}'.format(GPU))
-    cawn = CAWN(n_feat, e_feat, agg=AGG,
+    cawn = CAWN(agg=AGG, node_dim=node_dim, edge_dim=edge_dim,
                 num_layers=NUM_LAYER, use_time=USE_TIME, attn_agg_method=ATTN_AGG_METHOD, attn_mode=ATTN_MODE,
                 n_head=ATTN_NUM_HEADS, drop_out=DROP_OUT, pos_dim=POS_DIM, pos_enc=POS_ENC, num_classes = num_cls,
                 num_neighbors=NUM_NEIGHBORS, walk_n_head=WALK_N_HEAD, walk_mutual=WALK_MUTUAL, walk_linear_out=args.walk_linear_out, walk_pool=args.walk_pool,
                 cpu_cores=CPU_CORES, verbosity=VERBOSITY, get_checkpoint_path=None)
+    
+    cawn.temproal_update(ngh_finder=full_ngh_finder, n_feat=n_feat, e_feat=e_feat)
     cawn.to(device)
     optimizer = torch.optim.Adam(cawn.parameters(), lr=LEARNING_RATE)
     criterion = torch.nn.BCELoss()
@@ -256,26 +258,37 @@ for sp in range(VIEW):
 
             # final testing
             cawn.test_emb_update(full_test_ngh_finder, test_n_feat, test_e_feat)  # remember that testing phase should always use the full neighbor finder
-            test_acc, test_ap, test_f1, test_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_label_l, test_e_idx_l)
+            test_acc, test_ap, test_f1, test_auc = eval_one_epoch(cawn, test_rand_sampler, test_src_l, test_dst_l, test_ts_l, test_e_idx_l)
             print('Test statistics: {} all nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_acc, test_auc, test_ap))
             test_new_new_acc, test_new_new_ap, test_new_new_auc, test_new_old_acc, test_new_old_ap, test_new_old_auc = [-1]*6
 
+            validation_dict = {
+                "val_acc": val_acc,
+                "val_f1": val_f1,
+                "test_acc": test_acc,
+                "precision": test_ap,  # Assuming test_ap is used as precision
+                "test_roc_auc": test_auc,    # Assuming test_auc is used as recall
+                "f1": test_f1  # Assuming test_new_new_ap is used as F1
+            }
+
             if args.mode == 'i':
-                test_new_new_acc, test_new_new_ap, test_new_new_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_label_new_new_l, test_e_idx_new_new_l)
-                print('Test statistics: {} new-new nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_new_new_acc, test_new_new_auc,test_new_new_ap ))
-                test_new_old_acc, test_new_old_ap, test_new_old_f1, test_new_old_auc = eval_one_epoch('test for {} nodes'.format(args.mode), cawn, test_rand_sampler, test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_label_new_old_l, test_e_idx_new_old_l)
-                print('Test statistics: {} new-old nodes -- acc: {}, auc: {}, ap: {}'.format(args.mode, test_new_old_acc, test_new_old_auc, test_new_old_ap))
+                test_new_new_acc, test_new_new_ap, test_new_new_f1, test_new_new_auc = eval_one_epoch(cawn, test_rand_sampler, test_src_new_new_l, test_dst_new_new_l, test_ts_new_new_l, test_e_idx_new_new_l)
+                print('Test statistics: {} new-new nodes -- acc: {}, auc: {}, ap: {}'.format(mode, test_new_new_acc, test_new_new_auc,test_new_new_ap ))
+                test_new_old_acc, test_new_old_ap, test_new_old_f1, test_new_old_auc = eval_one_epoch(cawn, test_rand_sampler, test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_e_idx_new_old_l)
+                print('Test statistics: {} new-old nodes -- acc: {}, auc: {}, ap: {}'.format(mode, test_new_old_acc, test_new_old_auc, test_new_old_ap))
 
-
+                validation_dict = {**validation_dict, **{"test_new_new_acc": test_new_new_acc, "test_new_new_auc": test_new_new_auc, "test_new_new_f1": test_new_new_f1}, **{"test_new_new_acc": test_new_old_acc, "test_new_new_auc": test_new_old_auc, "test_new_old_f1": test_new_old_f1}}
+            score_record.append(validation_dict)
             cawn.train_val_emb_restore()
+
     """
     TODO: Modify time_evaluation.py to fit for new metrics testing result
     """
 
     temporaloader.update_event(sp)
-    rpresent.score_record(temporal_score_=score_record, node_size=temporalgraph.num_nodes, temporal_idx=sp, epoch_interval=epoch_tester)
+    rpresent.score_record(temporal_score_=score_record, node_size=temporalgraph.num_nodes, temporal_idx=sp, epoch_interval=epoch_tester, mode=mode)
     snapshot_list.append(score_record)
 
 rpresent.record_end()
 rscore.record_end()
-rscore.fast_processing(snapshot_list)
+rscore.fast_processing(mode, snapshot_list)

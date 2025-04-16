@@ -6,7 +6,7 @@ from sklearn.metrics import f1_score
 from sklearn.metrics import roc_auc_score
 
 
-def eval_one_epoch(hint, tgan, sampler, src, dst, ts, label, val_e_idx_l=None):
+def eval_one_epoch(tgan, sampler, src, dst, ts, val_e_idx_l=None):
     val_acc, val_ap, val_f1, val_auc = [], [], [], []
     with torch.no_grad():
         tgan = tgan.eval()
@@ -14,9 +14,6 @@ def eval_one_epoch(hint, tgan, sampler, src, dst, ts, label, val_e_idx_l=None):
         num_test_instance = len(src)
         num_test_batch = math.ceil(num_test_instance / TEST_BATCH_SIZE)
         for k in range(num_test_batch):
-            # percent = 100 * k / num_test_batch
-            # if k % int(0.2 * num_test_batch) == 0:
-            #     logger.info('{0} progress: {1:10.4f}'.format(hint, percent))
             s_idx = k * TEST_BATCH_SIZE
             e_idx = min(num_test_instance - 1, s_idx + TEST_BATCH_SIZE)
             if s_idx == e_idx:
@@ -38,6 +35,6 @@ def eval_one_epoch(hint, tgan, sampler, src, dst, ts, label, val_e_idx_l=None):
 
             val_acc.append((pred_label == true_label).mean())
             val_ap.append(average_precision_score(true_label, pred_score))
-            # val_f1.append(f1_score(true_label, pred_label))
+            val_f1.append(f1_score(true_label, pred_label))
             val_auc.append(roc_auc_score(true_label, pred_score))
     return np.mean(val_acc), np.mean(val_ap), None, np.mean(val_auc)

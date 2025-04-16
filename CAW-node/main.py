@@ -178,7 +178,7 @@ for sp in range(VIEW):
 
     # model initialization
     device = torch.device('cuda:{}'.format(GPU))
-    cawn.temproal_update(ngh_finder=train_rand_sampler, n_feat=n_feat, e_feat=e_feat)
+    cawn.temproal_update(ngh_finder=full_ngh_finder, n_feat=n_feat, e_feat=e_feat)
     cawn.to(device)
     optimizer = torch.optim.Adam(cawn.parameters(), lr=LEARNING_RATE)
     criterion = torch.nn.CrossEntropyLoss()

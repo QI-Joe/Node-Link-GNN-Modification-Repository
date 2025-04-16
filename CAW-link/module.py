@@ -10,6 +10,7 @@ from position import *
 from torch.nn import MultiheadAttention
 import torch.nn.functional as F
 from graph import NeighborFinder
+from typing import Union, Optional
 
 PRECISION = 5
 POS_DIM_ALTER = 100
@@ -418,7 +419,7 @@ class CAWN(torch.nn.Module):
         self.pos_dim = pos_dim  # position feature dimension
         self.pos_enc = pos_enc
         self.model_dim = self.feat_dim + self.e_feat_dim + self.time_dim + self.pos_dim
-        self.logger.info('neighbors: {}, node dim: {}, edge dim: {}, pos dim: {}, edge dim: {}'.format(self.num_neighbors, self.feat_dim, self.e_feat_dim, self.pos_dim, self.time_dim))
+        print('neighbors: {}, node dim: {}, edge dim: {}, pos dim: {}, edge dim: {}'.format(self.num_neighbors, self.feat_dim, self.e_feat_dim, self.pos_dim, self.time_dim))
 
         # aggregation method
         self.agg = agg
@@ -469,21 +470,24 @@ class CAWN(torch.nn.Module):
         self.e_feat_th_backup = self.e_feat_th
         self.edge_raw_embed_backup = self.edge_raw_embed
         self.node_raw_embed_backup = self.node_raw_embed
+        self.ngh_finder_backup = self.ngh_finder
 
     def train_val_emb_restore(self):
+        self.ngh_finder = self.ngh_finder_backup
         self.n_feat_th = self.n_feat_th_backup
         self.e_feat_th = self.e_feat_th_backup
         self.edge_raw_embed = self.edge_raw_embed_backup
         self.node_raw_embed = self.node_raw_embed_backup
 
     def test_emb_update(self, ngh_finder, n_feat, e_feat):
-        self.ngh_finder: NeighborFinder = ngh_finder
         self.train_val_backup()
+        self.ngh_finder: NeighborFinder = ngh_finder
         device = self.n_feat_th.device
         self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)).to(device))
         self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)).to(device))
         self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True).to(device)
         self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True).to(device)
+    
     def init_attn_model_list(self, attn_agg_method, attn_mode, n_head, drop_out):
         if attn_agg_method == 'attn':
             self.logger.info('Aggregation uses attention model')
@@ -643,6 +647,10 @@ class CAWN(torch.nn.Module):
             masks = (node_records_th != 0).sum(dim=-1).long()  # shape [batch, n_walk], here the masks means differently: it records the valid length of each walk
         else:
             raise NotImplementedError('{} forward propagation strategy not implemented.'.format(self.agg))
+        
+        if (masks<=0).any():
+            row, col = torch.where(masks<=0)
+            masks[row, col] = 1
         return hidden_embeddings, masks
 
     def retrieve_time_features(self, cut_time_l, t_records):
@@ -1041,7 +1049,7 @@ class RandomWalkAttention(nn.Module):
         Return shape [batch, n_walk, feat_dim]
         '''
         combined_features = self.aggregate(hidden_embeddings, time_features, edge_features, position_features)
-        combined_features = self.feature_encoder(combined_features, masks)
+        combined_features = self.feature_encoder.forward(combined_features, masks)
         if self.pos_dim > 0:
             position_features = self.position_encoder(position_features, masks)
             combined_features = torch.cat([combined_features, position_features], dim=-1)
@@ -1088,11 +1096,14 @@ class FeatureEncoder(nn.Module):
         self.lstm_encoder = nn.LSTM(input_size=in_features, hidden_size=self.hidden_features_one_direction, batch_first=True, bidirectional=True)
         self.dropout = nn.Dropout(dropout_p)
 
-    def forward(self, X, mask=None):
+    def forward(self, X: torch.Tensor, mask: Optional[torch.Tensor | None]=None):
         batch, n_walk, len_walk, feat_dim = X.shape
         X = X.view(batch*n_walk, len_walk, feat_dim)
         if mask is not None:
-            lengths = mask.view(batch*n_walk)
+            lengths: torch.Tensor = mask.view(batch*n_walk).cpu()
+            if lengths.device!="cpu":
+                lengths = lengths.cpu()
+
             X = pack_padded_sequence(X, lengths, batch_first=True, enforce_sorted=False)
         encoded_features = self.lstm_encoder(X)[0]
         if mask is not None:

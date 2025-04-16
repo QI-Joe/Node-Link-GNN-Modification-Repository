@@ -1,19 +1,123 @@
 import numpy as np
 import random
 import pandas as pd
-
+from utils.my_dataloader import Temporal_Splitting, Dynamic_Dataloader, Temporal_Dataloader, data_load
+import copy
+import torch
 
 class Data:
-  def __init__(self, sources, destinations, timestamps, edge_idxs, labels):
-    self.sources = sources
-    self.destinations = destinations
-    self.timestamps = timestamps
-    self.edge_idxs = edge_idxs
-    self.labels = labels
-    self.n_interactions = len(sources)
-    self.unique_nodes = set(sources) | set(destinations)
-    self.n_unique_nodes = len(self.unique_nodes)
+  def __init__(self, sources, destinations, timestamps, edge_idxs, labels, \
+               hash_table: dict[int, int], node_feat: np.ndarray = None, edge_feat: np.ndarray = None):
+      self.sources = sources
+      self.destinations = destinations
+      self.timestamps = timestamps
+      self.edge_idxs = edge_idxs
+      self.labels = labels
+      self.n_interactions = len(sources)
+      self.unique_nodes = set(sources) | set(destinations)
+      self.n_unique_nodes = len(self.unique_nodes)
+      self.tbatch = None
+      self.n_batch = 0
+      self.node_feat = node_feat
+      self.edge_feat = edge_feat
+      self.hash_table = hash_table
 
+def quantile_(threshold: float, timestamps: torch.Tensor) -> tuple[torch.Tensor]:
+  full_length = timestamps.shape[0]
+  val_idx = int(threshold*full_length)
+
+  if not isinstance(timestamps, torch.Tensor):
+     timestamps = torch.from_numpy(timestamps)
+  train_mask = torch.zeros_like(timestamps, dtype=bool)
+  train_mask[:val_idx] = True
+
+  val_mask = torch.zeros_like(timestamps, dtype=bool)
+  val_mask[val_idx:] = True
+
+  return train_mask, val_mask
+
+def to_TPPR_Data(graph: Temporal_Dataloader) -> Data:
+    nodes = graph.x
+    edge_idx = np.arange(graph.edge_index.shape[1])
+    timestamp = graph.edge_attr
+    src, dest = graph.edge_index[0, :], graph.edge_index[1, :]
+    labels = graph.y
+
+    hash_dataframe = copy.deepcopy(graph.my_n_id.node.loc[:, ["index", "node"]].values.T)
+    hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
+    
+    if np.any(graph.edge_attr != None):
+        edge_attr = graph.edge_attr
+    if np.any(graph.pos != None):
+        pos = graph.pos
+        pos = pos.numpy() if isinstance(pos, torch.Tensor) else pos
+    else:
+        pos = graph.x
+
+    edge_feat, node_feat = graph.edge_pos, graph.node_pos
+    TPPR_data = Data(sources= src, destinations=dest, timestamps=timestamp, edge_idxs = edge_idx, \
+                     labels=labels, hash_table=hash_table, node_feat=node_feat, edge_feat=edge_feat)
+
+    return TPPR_data
+
+def get_data_TGAT(dataset_name, snapshot: int, views: int) -> tuple[list[Data|int], int, np.ndarray, int]:
+    r"""
+    this function is used to convert the node features to the correct format
+    e.g. sample node dataset is in the format of [node_id, edge_idx, timestamp, features] with correspoding
+    shape [(n, ), (m,2), (m,), (m,d)]. be cautious on transformation method
+    """
+    graph, idx_list = data_load(dataset_name, emb_size=64)
+    if snapshot<=3: 
+        graph.edge_attr = np.arange(graph.edge_index.shape[1])
+        graph_list = [graph]
+    else:
+        graph_list = Temporal_Splitting(graph).temporal_splitting(time_mode='view', snapshot=snapshot, views=views)
+    
+    graph_num_node, graph_feat, edge_number = max(graph.x)+1, copy.deepcopy(graph.pos), graph.edge_index.shape[1]
+
+    TPPR_list: list[list[Data]] = []
+    lenth = len(graph_list)
+    single_graph = False
+    if lenth < 2: 
+        lenth = 2
+        single_graph = True
+
+    for idxs in range(0, lenth-1):
+        # covert Temproal_graph object to Data object
+        items = graph_list[idxs]
+        items.edge_attr = items.edge_attr # .numpy()
+        # items.pos = items.pos.numpy()
+        items.y = np.array(items.y)
+
+        t_labels = items.y
+        full_data = to_TPPR_Data(items)
+        timestamp = full_data.timestamps
+        train_mask, val_mask = quantile_(threshold=0.85, timestamps=timestamp)
+
+        hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
+        hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
+
+        edge_train_feat = full_data.edge_feat[train_mask]
+        edge_val_feat = full_data.edge_feat[val_mask]
+
+        train_data = Data(full_data.sources[train_mask], full_data.destinations[train_mask], full_data.timestamps[train_mask],\
+                        full_data.edge_idxs[train_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat, edge_feat=edge_train_feat)
+        
+        val_data = Data(full_data.sources[val_mask], full_data.destinations[val_mask], full_data.timestamps[val_mask],\
+                        full_data.edge_idxs[val_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat, edge_feat=edge_val_feat)
+        
+        if single_graph or idxs == lenth-1:
+            test_data = val_data
+        else:
+            test = graph_list[idxs+1]
+            test_data = to_TPPR_Data(test)
+        node_num = items.num_nodes
+        node_edges = items.num_edges
+
+        TPPR_list.append([full_data, train_data, val_data, test_data, node_num, node_edges])
+
+
+    return TPPR_list, graph_num_node, graph_feat, edge_number
 
 def get_data_node_classification(dataset_name, use_validation=False):
   ### Load data and train val test split
