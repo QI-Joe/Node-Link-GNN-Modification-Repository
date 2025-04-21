@@ -1,0 +1,9 @@
+log/
+processed/
+saved_checkpoints/
+saved_models/
+*.txt
+logs/
+.vscode/
+__pycache__/
+README.md

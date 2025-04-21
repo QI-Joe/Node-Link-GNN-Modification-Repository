@@ -5,6 +5,9 @@ import torch
 
 import torch.nn as nn
 import torch.nn.functional as F
+from graph import NeighborFinder
+from torch import Tensor
+from typing import Optional, Union
 
 class MergeLayer(torch.nn.Module):
     def __init__(self, dim1, dim2, dim3, dim4):
@@ -381,28 +384,28 @@ class AttnModel(torch.nn.Module):
 
 
 class TGAN(torch.nn.Module):
-    def __init__(self, ngh_finder, n_feat, e_feat,
-                 attn_mode='prod', use_time='time', agg_method='attn', node_dim=None, time_dim=None,
+    def __init__(self, attn_mode='prod', use_time='time', agg_method='attn', node_dim=None, time_dim=None,
                  num_layers=3, n_head=4, null_idx=0, num_heads=1, drop_out=0.1, seq_len=None):
         super(TGAN, self).__init__()
         
         self.num_layers = num_layers 
-        self.ngh_finder = ngh_finder
         self.null_idx = null_idx
         self.logger = logging.getLogger(__name__)
-        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)))
-        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)))
-        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True)
-        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True)
         
-        self.feat_dim = self.n_feat_th.shape[1]
+        self.feat_dim = node_dim
         
         self.n_feat_dim = self.feat_dim
-        self.e_feat_dim = self.feat_dim
+        self.e_feat_dim = time_dim
         self.model_dim = self.feat_dim
         
         self.use_time = use_time
         self.merge_layer = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, self.feat_dim)
+        
+        self.ngh_finder: Optional[NeighborFinder | None] = None
+        self.n_feat_th: Optional[Tensor | None] = None
+        self.e_feat_th: Optional[Tensor | None] = None
+        self.edge_raw_embed: Optional[Tensor| None] = None
+        self.node_raw_embed: Optional[Tensor | None] = None
         
         if agg_method == 'attn':
             self.logger.info('Aggregation uses attention model')
@@ -440,6 +443,41 @@ class TGAN(torch.nn.Module):
             raise ValueError('invalid time option!')
         
         self.affinity_score = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, 1) #torch.nn.Bilinear(self.feat_dim, self.feat_dim, 1, bias=True)
+        
+    def ngh_finder_update(self, ngh_finder: NeighborFinder):
+        """
+        Only used for code standards. Considering trivial update for each ngh_finder, now standarlize it
+        """
+        self.ngh_finder = ngh_finder
+        
+    def temproal_update(self, ngh_finder, n_feat, e_feat):
+        self.ngh_finder: NeighborFinder = ngh_finder
+        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)))
+        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)))
+        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True)
+        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True)
+
+    def train_val_backup(self):
+        self.n_feat_th_backup = self.n_feat_th
+        self.e_feat_th_backup = self.e_feat_th
+        self.edge_raw_embed_backup = self.edge_raw_embed
+        self.node_raw_embed_backup = self.node_raw_embed
+
+    def train_val_emb_restore(self):
+        self.n_feat_th = self.n_feat_th_backup
+        self.e_feat_th = self.e_feat_th_backup
+        self.edge_raw_embed = self.edge_raw_embed_backup
+        self.node_raw_embed = self.node_raw_embed_backup
+
+    def test_emb_update(self, ngh_finder, n_feat, e_feat):
+        self.train_val_backup()
+        self.ngh_finder: NeighborFinder = ngh_finder
+        device = self.n_feat_th.device
+        # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)).to(device))
+        self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)).to(device))
+        self.edge_raw_embed = torch.nn.Embedding.from_pretrained(self.e_feat_th, padding_idx=0, freeze=True).to(device)
+        self.node_raw_embed = torch.nn.Embedding.from_pretrained(self.n_feat_th, padding_idx=0, freeze=True).to(device) 
         
     def forward(self, src_idx_l, target_idx_l, cut_time_l, num_neighbors=20):
         
