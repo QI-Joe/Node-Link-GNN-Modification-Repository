@@ -625,7 +625,7 @@ def load_tsv(path: list[tuple[str]], *wargs) -> tuple[pd.DataFrame]:
 def load_example():
     return "node_feat", "node_label", "edge_index", "train_indices", "val_indices", "test_indices"
 
-def data_load(dataset: str, for_test:bool=False, **wargs) -> tuple[Temporal_Dataloader, Union[NodeIdxMatching|dict]]:
+def data_load(dataset: str, emb_size: int, **wargs) -> tuple[Temporal_Dataloader, Union[NodeIdxMatching|dict]]:
     dataset = dataset.lower()
     if dataset in STATIC:
         return load_static_dataset(dataset=dataset, **wargs)
@@ -633,10 +633,14 @@ def data_load(dataset: str, for_test:bool=False, **wargs) -> tuple[Temporal_Data
         graph = load_standard(dataset, **wargs)[0]
         fake_time = graph.num_nodes
         edge_attr = np.arange(fake_time)
-        graph.edge_attr = torch.from_numpy(edge_attr)
-        if for_test:
-            return graph, None
+        graph.edge_attr = edge_attr
+
+        node_pos = graph.x.numpy()
+        edge_pos = position_encoding(graph.num_edges, emb_size)
+
+        graph.pos = (node_pos, edge_pos)
         nodes = [i for i in range(graph.x.shape[0])]
+        graph.x = nodes
         return graph, NodeIdxMatching(False, nodes=nodes, label=graph.y.numpy())
     raise ValueError("Dataset not found")
 

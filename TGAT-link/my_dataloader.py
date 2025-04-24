@@ -8,7 +8,7 @@ from torch import Tensor
 import copy
 import os
 from torch_geometric.loader import NeighborLoader
-from typing import Any, Union
+from typing import Any, Union, Optional, List, Tuple, Dict
 from multipledispatch import dispatch
 import os.path as osp
 from torch_geometric.datasets import Planetoid, CitationFull, WikiCS, Coauthor, Amazon
@@ -22,7 +22,7 @@ from sklearn.preprocessing import scale
 MOOC, Mooc_extra = "Temporal_Dataset/act-mooc/act-mooc/", ["mooc_action_features", "mooc_action_labels", "mooc_actions"]
 MATHOVERFLOW, MathOverflow_extra = "Temporal_Dataset/mathoverflow/", ["sx-mathoverflow-a2q", "sx-mathoverflow-c2a", "sx-mathoverflow-c2q", "sx-mathoverflow"]
 OVERFLOW = r"Temporal_Dataset/"
-STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow"]
+STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow", "mooc"]
 DYNAMIC = ["mathoverflow", "askubuntu", "stackoverflow"]
 EMB_SIZE = 64
 
@@ -47,6 +47,9 @@ class NodeIdxMatching(object):
         else:
             if not isinstance(nodes, (np.ndarray, list, torch.Tensor)): 
                 nodes = list(nodes)
+            # For edge prediction task...
+            if label.shape[0] > nodes.shape[0]:
+                label = np.zeros(nodes.shape, dtype=np.int8)
             self.nodes = self.to_numpy(nodes)
             self.node: pd.DataFrame = pd.DataFrame({"node": nodes, "label": label}).reset_index()
 
@@ -443,6 +446,10 @@ class Temporal_Splitting(object):
             snapshot, views = kwargs["snapshot"], kwargs["views"]
             T = self.sampling_layer(snapshot, views, span)
 
+        if len(T) < 2:
+            return [Temporal_Dataloader(nodes=self.graph.x, edge_index=self.graph.edge_index, edge_attr=self.graph.edge_attr, \
+            y = self.graph.y, pos=self.graph.pos)]
+
         for idx, start in enumerate(T):
             if start<0.01: continue
 
@@ -527,6 +534,12 @@ def get_combination(labels: list[int]) -> dict:
             outer_ptr += 1
     return combination
 
+def load_mooc(path:str=None) -> Tuple[pd.DataFrame]:
+    feat = pd.read_csv(os.path.join(path, "mooc_action_features.tsv"), sep = '\t')
+    general = pd.read_csv(os.path.join(path, "mooc_actions.tsv"), sep = '\t')
+    edge_label = pd.read_csv(os.path.join(path, "mooc_action_labels.tsv"), sep = '\t')
+    return general, feat, edge_label
+
 def load_static_overflow(prefix: str, path: str=None, *wargs) -> tuple[Data, NodeIdxMatching]:
     dataset = "sx-"+prefix
     path = OVERFLOW + prefix + r"/static"
@@ -585,6 +598,30 @@ def load_standard(dataset: str, *wargs) -> tuple[Data, NodeIdxMatching]:
     dataset = get_dataset(path, dataset)
     return dataset
 
+def edge_load_mooc(dataset:str):
+    auto_path = r"../../TestProejct/Temporal_Dataset/act-mooc/act-mooc"
+    edge, feat, label = load_mooc(auto_path)
+    # for edge, its column idx is listed as ["ACTIONID", "USERID", "TARGETID", "TIMESTAMP"]
+    edge = edge.values
+    edge_idx, src2dst, timestamp = edge[:, 0], edge[:, 1:3].T, edge[:, 3]
+    
+    print(src2dst.dtype, src2dst.shape)
+    src2dst = src2dst.astype(np.int64)
+    
+    edge_pos = feat.iloc[:, 1:].values
+    y = label.iloc[:, 1].values
+    
+    node = np.unique(src2dst).astype(np.int64)
+    max_node = int(np.max(node)) + 1
+    if dataset == "mooc":
+        node = np.unique(src2dst[0])
+    node_pos = position_encoding(max_node).numpy()
+    # edge_pos = time_encoding(timestamp)
+    
+    pos = (node_pos, edge_pos)
+    graph = Data(x = node, edge_index=src2dst, edge_attr=timestamp, y = y, pos = pos)
+    return graph
+
 def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim: int = 64, *wargs) -> tuple[Temporal_Dataloader, NodeIdxMatching]:
     """
     Now this txt file only limited to loading data in from mathoverflow datasets
@@ -595,6 +632,8 @@ def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim
         edges, label = load_static_overflow(dataset) if not path else load_static_overflow(dataset, path)
     elif dataset == "dblp":
         edges, label = load_dblp_interact() if not path else load_dblp_interact(path)
+    elif dataset == "mooc":
+        return edge_load_mooc(dataset), None
 
     x = label.node.to_numpy()
     nodes = position_encoding(x.max()+1, fea_dim)[x].numpy()

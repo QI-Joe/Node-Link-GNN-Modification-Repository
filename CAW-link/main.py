@@ -277,7 +277,7 @@ for sp in range(VIEW):
                 test_new_old_acc, test_new_old_ap, test_new_old_f1, test_new_old_auc = eval_one_epoch(cawn, test_rand_sampler, test_src_new_old_l, test_dst_new_old_l, test_ts_new_old_l, test_e_idx_new_old_l)
                 print('Test statistics: {} new-old nodes -- acc: {}, auc: {}, ap: {}'.format(mode, test_new_old_acc, test_new_old_auc, test_new_old_ap))
 
-                validation_dict = {**validation_dict, **{"test_new_new_acc": test_new_new_acc, "test_new_new_auc": test_new_new_auc, "test_new_new_f1": test_new_new_f1}, **{"test_new_new_acc": test_new_old_acc, "test_new_new_auc": test_new_old_auc, "test_new_old_f1": test_new_old_f1}}
+                validation_dict = {**validation_dict, **{"test_new_new_acc": test_new_new_acc, "test_new_new_auc": test_new_new_auc, "test_new_new_f1": test_new_new_f1}, **{"test_new_old_acc": test_new_old_acc, "test_new_old_auc": test_new_old_auc, "test_new_old_f1": test_new_old_f1}}
             score_record.append(validation_dict)
             cawn.train_val_emb_restore()
 

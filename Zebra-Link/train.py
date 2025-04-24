@@ -27,7 +27,7 @@ def str2bool(order: str)->bool:
   return False
 
 parser = argparse.ArgumentParser('Self-supervised training with diffusion models')
-parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='cora')
+parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='dblp')
 parser.add_argument('--bs', type=int, default=1000, help='Batch_size')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=7, help='Number of heads used in attention layer')
@@ -35,7 +35,7 @@ parser.add_argument('--n_epoch', type=int, default=100, help='Number of epochs')
 parser.add_argument('--n_layer', type=int, default=2, help='Number of network layers')
 parser.add_argument('--lr', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
-parser.add_argument('--snapshot', type=int, default=3, help='Number of runs')
+parser.add_argument('--snapshot', type=int, default=10, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.3, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
 parser.add_argument('--use_memory', default=True, type=bool, help='Whether to augment the model with a node memory')
@@ -79,9 +79,9 @@ MEMORY_DIM = args.memory_dim
 BATCH_SIZE = args.bs
 dynamic: bool = args.dynamic
 epoch_tester: int = 10
+SNAPSHOT = args.snapshot
 
-
-round_list, graph_num, graph_feature, edge_num = get_data_TPPR(DATA, snapshot=args.snapshot, dynamic=dynamic)
+round_list, graph_num, graph_feature, edge_num = get_data_TPPR(DATA, snapshot=SNAPSHOT, views=SNAPSHOT-2)
 device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
 device = torch.device(device_string)
 
@@ -95,8 +95,8 @@ for i in range(len(round_list)):
   args.n_nodes = n_nodes +1
   args.n_edges = n_edges +1
 
-  edge_feats = None
-  node_feats = graph_feature
+  edge_feats = full_data.edge_feat
+  node_feats = full_data.node_feat
   node_feat_dims = full_data.node_feat.shape[1]
 
   if args.ignore_node_feats:

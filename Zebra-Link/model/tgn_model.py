@@ -39,7 +39,7 @@ class TGN(torch.nn.Module):
 
 
     self.edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(device)
-    self.n_edge_features = self.s.shape[1]
+    self.n_edge_features = self.edge_raw_features.shape[1]
     self.n_nodes = args.n_nodes
     self.time_dimension = time_dimension
     self.memory_dimension= memory_dimension

@@ -6,10 +6,13 @@ import os
 from utils.my_dataloader import data_load, Temporal_Splitting, Temporal_Dataloader
 import torch
 import copy
-from typing import Union, Optional
+from typing import Union, Optional, Any
+from numpy import ndarray
+from torch import Tensor
 
 class Data:
-  def __init__(self, sources, destinations, timestamps, edge_idxs, labels, hash_table: dict[int, int], node_feat: np.ndarray = None):
+  def __init__(self, sources, destinations, timestamps, edge_idxs, labels, \
+               hash_table: dict[int, int], full_feat: Optional[tuple | ndarray] = None):
         self.sources = sources
         self.destinations = destinations
         self.timestamps = timestamps
@@ -20,7 +23,7 @@ class Data:
         self.n_unique_nodes = len(self.unique_nodes)
         self.tbatch = None
         self.n_batch = 0
-        self.node_feat = node_feat
+        self.node_feat, self.edge_feat = full_feat
         self.hash_table = hash_table
 
         self.target_node: Union[set|None] = None
@@ -51,14 +54,14 @@ class Data:
 
       seen_nodes = t_transfer_map(node_idx)
       test_seen_nodes = t1_transfer_map(batch_nodes)
-
+      
+      # test_node represent node idx that has NOT been seen in validation and train data
       test_node = set(test_seen_nodes) - set(seen_nodes)
       reverse_test_hashtable = {v:k for k, v in self.hash_table.items()}
       t1_back_transfer = np.vectorize(reverse_test_hashtable.get)
-      t_test_node = t1_back_transfer(test_node)
+      self.target_node = t1_back_transfer(sorted(test_node))
 
-      # self.target_node_mask = np.isin(batch_nodes, sorted(t_test_node))
-      self.target_node = self.unique_nodes - t_test_node
+      # self.target_node = self.unique_nodes - set(t_test_node)
 
     src_mask = np.isin(self.sources, sorted(self.target_node))
     dst_mask = np.isin(self.destinations, sorted(self.target_node))
@@ -78,8 +81,9 @@ class Data:
     val_test_share = validation_node & test_node
 
     expected_val = list(validation_node - (common_share | train_val_share))
+    new_val = val_data.inductive_back_propogation(expected_val, single_graph=True)
+    new_test= None
 
-    new_test, new_val = None, None
     if single_graph:
       expected_test = list(test_node - (train_test_share | common_share | val_test_share))
       new_test = test_data.inductive_back_propogation(expected_test, single_graph = single_graph)
@@ -92,8 +96,6 @@ class Data:
     if single_graph:
       assert len(set(expected_test) & train_node & set(expected_val)) == 0, "train node and val data has interacted with test data"
 
-    new_val = val_data.inductive_back_propogation(expected_val, single_graph=True)
-    
     return new_val, new_test
 
   # For edge inductive test and single graph
@@ -132,7 +134,7 @@ class Data:
     y, hash_table = self.labels, self.hash_table
 
     return Data(sources=src, destinations=dst, timestamps=tsp, \
-                edge_idxs=edge_idx, labels=y, hash_table=hash_table, node_feat=self.node_feat)
+                edge_idxs=edge_idx, labels=y, hash_table=hash_table, full_feat=(self.node_feat, self.edge_feat))
 
 
   def edge_propagate_back(self, edge_mask: np.ndarray):
@@ -188,24 +190,23 @@ def compute_time_statistics(sources, destinations, timestamps):
   return mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst
 
 def to_TPPR_Data(graph: Temporal_Dataloader) -> Data:
-    nodes = graph.x
     edge_idx = np.arange(graph.edge_index.shape[1])
     timestamp = graph.edge_attr
     src, dest = graph.edge_index[0, :], graph.edge_index[1, :]
     labels = graph.y
 
     hash_dataframe = copy.deepcopy(graph.my_n_id.node.loc[:, ["index", "node"]].values.T)
-    hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
+    hash_table: dict[int, int] = {idx: node for idx, node in zip(*hash_dataframe)}
     
-    if np.any(graph.edge_attr != None):
-        edge_attr = graph.edge_attr
     if np.any(graph.pos != None):
-        pos = graph.pos
-        pos = pos.numpy() if isinstance(pos, torch.Tensor) else pos
+        node_pos, edge_pos = graph.pos
+        def pos2numpy(pos: Optional[Tensor | ndarray] | Any) -> Optional[ndarray|Any]:
+           return pos.numpy() if isinstance(pos, Tensor) else pos
+        pos = (pos2numpy(node_pos), pos2numpy(edge_pos))
     else:
         pos = graph.x
 
-    TPPR_data = Data(sources= src, destinations=dest, timestamps=timestamp, edge_idxs = edge_idx, labels=labels, hash_table=hash_table, node_feat=pos)
+    TPPR_data = Data(sources= src, destinations=dest, timestamps=timestamp, edge_idxs = edge_idx, labels=labels, hash_table=hash_table, full_feat=pos)
 
     return TPPR_data
 
@@ -241,7 +242,7 @@ def quantile_static(val: float, test: float, timestamps: torch.Tensor) -> tuple[
 
   return train_mask, val_mask, test_mask
 
-def get_data_TPPR(dataset_name, snapshot: int, dynamic: bool):
+def get_data_TPPR(dataset_name, snapshot: int, views: int):
     r"""
     this function is used to convert the node features to the correct format\n
     e.g. sample node dataset is in the format of [node_id, edge_idx, timestamp, features] with correspoding\n
@@ -249,13 +250,13 @@ def get_data_TPPR(dataset_name, snapshot: int, dynamic: bool):
     
     2025.4.5 TPPR and data_load method will not support TGB-Series data anymore
     """
-    graph, idx_list = data_load(dataset_name, dynamic=dynamic)
+    graph, idx_list = data_load(dataset_name, emb_size=64)
     if snapshot<=3: 
         graph.edge_attr = np.arange(graph.edge_index.shape[1])
         graph_list = [Temporal_Dataloader(nodes=graph.x, edge_index=graph.edge_index, \
                                           edge_attr=graph.edge_attr, y=graph.y, pos=graph.pos)]
     else:
-        graph_list = Temporal_Splitting(graph, dynamic=dynamic, idxloader=idx_list).temporal_splitting(snapshot=snapshot)
+        graph_list = Temporal_Splitting(graph).temporal_splitting(time_mode = 'view', snapshot=snapshot, views = views)
     graph_num_node, graph_feat, edge_number = max(graph.x), copy.deepcopy(graph.pos), graph.edge_index.shape[1]
 
     TPPR_list: list[list[Data]] = []
@@ -279,18 +280,20 @@ def get_data_TPPR(dataset_name, snapshot: int, dynamic: bool):
         if single_graph:
           train_mask, val_mask, test_mask = quantile_static(val=0.1, test=0.2,timestamps=timestamp)
 
-        hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
-        hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
+        # hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
+        # # Zebra-Link will refresh node idx in each temporal graph, so here should use new node idx to match origin node
+        # hash_table: dict[int, int] = {idx: node for idx, node in zip(*hash_dataframe)}
 
+        full_feat = (full_data.node_feat, full_data.edge_feat)
         train_data = Data(full_data.sources[train_mask], full_data.destinations[train_mask], full_data.timestamps[train_mask],\
-                        full_data.edge_idxs[train_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat)
+                        full_data.edge_idxs[train_mask], t_labels, hash_table = full_data.hash_table, full_feat=full_feat)
         
         val_data = Data(full_data.sources[val_mask], full_data.destinations[val_mask], full_data.timestamps[val_mask],\
-                        full_data.edge_idxs[val_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat)
+                        full_data.edge_idxs[val_mask], t_labels, hash_table = full_data.hash_table, full_feat=full_feat)
         
         if single_graph:
             test_data = Data(full_data.sources[test_mask], full_data.destinations[test_mask], full_data.timestamps[test_mask],\
-                        full_data.edge_idxs[test_mask], t_labels, hash_table = hash_table, node_feat=full_data.node_feat)
+                        full_data.edge_idxs[test_mask], t_labels, hash_table = full_data.hash_table, full_feat=full_feat)
         elif idxs == lenth-1:
             test_data = val_data
         else:

@@ -39,7 +39,7 @@ def t2t1_node_alignment(t_nodes: set, t: Temporal_Dataloader, t1: Temporal_Datal
 
 ### Argument and global variables
 parser = argparse.ArgumentParser('Interface for TGAT experiments on link predictions')
-parser.add_argument('-d', '--data', type=str, help='data sources to use, try wikipedia or reddit', default='wikipedia')
+parser.add_argument('-d', '--data', type=str, help='data sources to use, try mooc or reddit', default='mooc')
 parser.add_argument('--bs', type=int, default=200, help='batch_size')
 parser.add_argument('--prefix', type=str, default='', help='prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=20, help='number of neighbors to sample')
@@ -55,7 +55,7 @@ parser.add_argument('--agg_method', type=str, choices=['attn', 'lstm', 'mean'], 
 parser.add_argument('--attn_mode', type=str, choices=['prod', 'map'], default='prod', help='use dot product attention or mapping based')
 parser.add_argument('--time', type=str, choices=['time', 'pos', 'empty'], help='how to use time information', default='time')
 parser.add_argument('--uniform', action='store_true', help='take uniform sampling from temporal neighbors')
-parser.add_argument('--snapshot', default=10, type=int,help='number of temporal graph in a given dataset')
+parser.add_argument('--snapshot', default=3, type=int,help='number of temporal graph in a given dataset')
 
 try:
     args = parser.parse_args()
@@ -71,7 +71,7 @@ NUM_HEADS = args.n_head
 DROP_OUT = args.drop_out
 GPU = args.gpu
 UNIFORM = args.uniform
-NEW_NODE = args.new_node
+# NEW_NODE = args.new_node
 USE_TIME = args.time
 AGG_METHOD = args.agg_method
 ATTN_MODE = args.attn_mode
@@ -90,11 +90,12 @@ temporaloader = Dynamic_Dataloader(graph_list, graph=graph)
 num_cls = max(graph.y) + 1
 
 NODE_DIM = graph.pos[0].shape[1]
-TIME_DIM = graph.pos[1].shape[1] # TIME_DIM == EDGE_DIM
+EDGE_DIM = graph.pos[1].shape[1]
+TIME_DIM = 64 # TIME_DIM == NODE_DIM
 
 device = torch.device('cuda:{}'.format(GPU))
-tgan: TGAN = TGAN(num_cls=num_cls, num_layers=NUM_LAYER, use_time=USE_TIME, agg_method=AGG_METHOD, attn_mode=ATTN_MODE,
-            seq_len=SEQ_LEN, n_head=NUM_HEADS, drop_out=DROP_OUT, node_dim=NODE_DIM, time_dim=TIME_DIM)
+tgan: TGAN = TGAN(num_layers=NUM_LAYER, use_time=USE_TIME, agg_method=AGG_METHOD, attn_mode=ATTN_MODE,
+            seq_len=SEQ_LEN, n_head=NUM_HEADS, drop_out=DROP_OUT, node_dim=NODE_DIM, time_dim=TIME_DIM, edge_dim=EDGE_DIM)
 snapshot_list = list()
 
 rscore, rpresent = TimeRecord(model_name="TGAT"), TimeRecord(model_name="TGAT")
@@ -140,8 +141,8 @@ def eval_one_epoch(tgan, sampler, src, dst, ts):
 
 ### Load data and train val test split
 
-tgan = TGAN(num_layers=NUM_LAYER, use_time=USE_TIME, agg_method=AGG_METHOD, attn_mode=ATTN_MODE,
-            seq_len=SEQ_LEN, n_head=NUM_HEADS, drop_out=DROP_OUT, node_dim=NODE_DIM, time_dim=TIME_DIM)
+# tgan = TGAN(num_layers=NUM_LAYER, use_time=USE_TIME, agg_method=AGG_METHOD, attn_mode=ATTN_MODE,
+#             seq_len=SEQ_LEN, n_head=NUM_HEADS, drop_out=DROP_OUT, node_dim=NODE_DIM, time_dim=TIME_DIM)
  
 
 for sp in range(VIEW):
@@ -256,7 +257,7 @@ for sp in range(VIEW):
     train_rand_sampler = RandEdgeSampler(train_src_l, train_dst_l)
     val_rand_sampler = RandEdgeSampler(src_l, dst_l)
     nn_val_rand_sampler = RandEdgeSampler(nn_val_src_l, nn_val_dst_l)
-    test_rand_sampler = RandEdgeSampler(src_l, dst_l)
+    test_rand_sampler = RandEdgeSampler(test_src, test_dst)
     nn_test_rand_sampler = RandEdgeSampler(nn_test_src_l, nn_test_dst_l)
 
     print(f"training edges: {len(train_src_l)} \

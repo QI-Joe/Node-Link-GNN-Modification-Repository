@@ -46,7 +46,22 @@ def eval_edge_prediction(model, negative_edge_sampler, data, n_neighbors, batch_
 
   return np.mean(val_ap), np.mean(val_auc), np.mean(val_acc)
 
+class LogRegression(torch.nn.Module):
+    def __init__(self, in_channels, num_classes):
+        super(LogRegression, self).__init__()
+        self.lin = torch.nn.Linear(in_channels, num_classes)
+        torch.nn.init.xavier_uniform_(self.lin.weight.data)
+        # torch.nn.init.xavier_uniform_(self.lin.weight.data)
 
+    def weights_init(self, m):
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight.data)
+            if m.bias is not None:
+                m.bias.data.fill_(0.0)
+
+    def forward(self, x):
+        ret = self.lin(x)
+        return ret
 
 def eval_node_classification(tgn, decoder, data, batch_size, n_neighbors):
   pred_prob = np.zeros(len(data.sources))

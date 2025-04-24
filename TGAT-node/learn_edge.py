@@ -25,10 +25,11 @@ def t2t1_node_alignment(t_nodes: set, t: Temporal_Dataloader, t1: Temporal_Datal
     t2t1 = t_list[np.isin(t_list[:, 0], list(t_nodes)), 1].tolist()
     t1_extra = list(set(t1_list[:,1]) - set(t_list[:,1]))
 
-    new_nodes = t2t1+t1_extra
-
-    t1_src = np.isin(t1.edge_index[0], new_nodes)
-    t1_dst = np.isin(t1.edge_index[1], new_nodes)
+    new_nodes = sorted(t2t1+t1_extra) # here the node is original nodes
+    resort_nodes = t1_list[np.isin(t1_list[:,1], new_nodes), 0].tolist() # here we match the original nodes back to new idxed node
+    
+    t1_src = np.isin(t1.edge_index[0], resort_nodes)
+    t1_dst = np.isin(t1.edge_index[1], resort_nodes)
 
     return t1_src*t1_dst
 

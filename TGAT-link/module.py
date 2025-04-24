@@ -367,7 +367,8 @@ class AttnModel(torch.nn.Module):
         """
 
         src_ext = torch.unsqueeze(src, dim=1) # src [B, 1, D]
-        src_e_ph = torch.zeros_like(src_ext)
+        shape_src_e = torch.Tensor(src_ext.shape[0], 1, seq_e.shape[-1]).to(src_ext.device)
+        src_e_ph = torch.zeros_like(shape_src_e)
         q = torch.cat([src_ext, src_e_ph, src_t], dim=2) # [B, 1, D + De + Dt] -> [B, 1, D]
         k = torch.cat([seq, seq_e, seq_t], dim=2) # [B, 1, D + De + Dt] -> [B, 1, D]
         
@@ -384,7 +385,7 @@ class AttnModel(torch.nn.Module):
 
 
 class TGAN(torch.nn.Module):
-    def __init__(self, attn_mode='prod', use_time='time', agg_method='attn', node_dim=None, time_dim=None,
+    def __init__(self, attn_mode='prod', use_time='time', agg_method='attn', node_dim=None, time_dim=None, edge_dim=None,
                  num_layers=3, n_head=4, null_idx=0, num_heads=1, drop_out=0.1, seq_len=None):
         super(TGAN, self).__init__()
         
@@ -393,13 +394,14 @@ class TGAN(torch.nn.Module):
         self.logger = logging.getLogger(__name__)
         
         self.feat_dim = node_dim
+        self.model_dim = node_dim
         
-        self.n_feat_dim = self.feat_dim
-        self.e_feat_dim = time_dim
-        self.model_dim = self.feat_dim
+        self.n_feat_dim = node_dim
+        self.e_feat_dim = edge_dim
+        self.time_dim = time_dim
         
         self.use_time = use_time
-        self.merge_layer = MergeLayer(self.feat_dim, self.feat_dim, self.feat_dim, self.feat_dim)
+        # self.merge_layer = MergeLayer(self.feat_dim, self.e_feat_dim, self.feat_dim, self.feat_dim)
         
         self.ngh_finder: Optional[NeighborFinder | None] = None
         self.n_feat_th: Optional[Tensor | None] = None
@@ -410,20 +412,20 @@ class TGAN(torch.nn.Module):
         if agg_method == 'attn':
             self.logger.info('Aggregation uses attention model')
             self.attn_model_list = torch.nn.ModuleList([AttnModel(self.feat_dim, 
-                                                               self.feat_dim, 
-                                                               self.feat_dim,
+                                                               self.e_feat_dim, 
+                                                               self.time_dim,
                                                                attn_mode=attn_mode, 
                                                                n_head=n_head, 
                                                                drop_out=drop_out) for _ in range(num_layers)])
         elif agg_method == 'lstm':
             self.logger.info('Aggregation uses LSTM model')
             self.attn_model_list = torch.nn.ModuleList([LSTMPool(self.feat_dim,
-                                                                 self.feat_dim,
-                                                                 self.feat_dim) for _ in range(num_layers)])
+                                                                 self.e_feat_dim,
+                                                                 self.time_dim) for _ in range(num_layers)])
         elif agg_method == 'mean':
             self.logger.info('Aggregation uses constant mean model')
             self.attn_model_list = torch.nn.ModuleList([MeanPool(self.feat_dim,
-                                                                 self.feat_dim) for _ in range(num_layers)])
+                                                                 self.e_feat_dim) for _ in range(num_layers)])
         else:
         
             raise ValueError('invalid agg_method value, use attn or lstm')
@@ -431,14 +433,14 @@ class TGAN(torch.nn.Module):
         
         if use_time == 'time':
             self.logger.info('Using time encoding')
-            self.time_encoder = TimeEncode(expand_dim=self.n_feat_th.shape[1])
+            self.time_encoder = TimeEncode(expand_dim=self.time_dim)
         elif use_time == 'pos':
             assert(seq_len is not None)
             self.logger.info('Using positional encoding')
-            self.time_encoder = PosEncode(expand_dim=self.n_feat_th.shape[1], seq_len=seq_len)
+            self.time_encoder = PosEncode(expand_dim=self.time_dim, seq_len=seq_len)
         elif use_time == 'empty':
             self.logger.info('Using empty encoding')
-            self.time_encoder = EmptyEncode(expand_dim=self.n_feat_th.shape[1])
+            self.time_encoder = EmptyEncode(expand_dim=self.time_dim)
         else:
             raise ValueError('invalid time option!')
         
@@ -450,7 +452,7 @@ class TGAN(torch.nn.Module):
         """
         self.ngh_finder = ngh_finder
         
-    def temproal_update(self, ngh_finder, n_feat, e_feat):
+    def temporal_update(self, ngh_finder, n_feat, e_feat):
         self.ngh_finder: NeighborFinder = ngh_finder
         self.n_feat_th = torch.nn.Parameter(torch.from_numpy(n_feat.astype(np.float32)))
         self.e_feat_th = torch.nn.Parameter(torch.from_numpy(e_feat.astype(np.float32)))
@@ -542,14 +544,14 @@ class TGAN(torch.nn.Module):
             src_ngh_feat = src_ngh_node_conv_feat.view(batch_size, num_neighbors, -1)
             
             # get edge time features and node features
-            src_ngh_t_embed = self.time_encoder(src_ngh_t_batch_th)
+            src_ngh_t_embed = self.time_encoder.forward(src_ngh_t_batch_th)
             src_ngn_edge_feat = self.edge_raw_embed(src_ngh_eidx_batch)
 
             # attention aggregation
             mask = src_ngh_node_batch_th == 0
-            attn_m = self.attn_model_list[curr_layers - 1]
+            attn_m: Optional[AttnModel | LSTMPool | MeanPool] = self.attn_model_list[curr_layers - 1]
                         
-            local, weight = attn_m(src_node_conv_feat, 
+            local, weight = attn_m.forward(src_node_conv_feat, 
                                    src_node_t_embed,
                                    src_ngh_feat,
                                    src_ngh_t_embed, 
