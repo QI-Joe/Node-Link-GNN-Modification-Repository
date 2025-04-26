@@ -4,6 +4,9 @@ import pandas as pd
 from utils.my_dataloader import Temporal_Splitting, Dynamic_Dataloader, Temporal_Dataloader, data_load
 import copy
 import torch
+from typing import Union, Optional, Any
+from torch import Tensor
+from numpy import ndarray
 
 class Data:
   def __init__(self, sources, destinations, timestamps, edge_idxs, labels, \
@@ -21,6 +24,139 @@ class Data:
       self.node_feat = node_feat
       self.edge_feat = edge_feat
       self.hash_table = hash_table
+      
+      self.target_node: Union[set|None] = None
+
+  def set_up_features(self, node_feat, edge_feat):
+    self.node_feat = node_feat
+    self.edge_feat = edge_feat
+
+  def inductive_back_propogation(self, node_idx: list, single_graph: bool, t_hash_table: Union[dict | None] = None):
+    """
+    Expected to clear the node index get establish the mask mainly for non-visible data node \n
+
+    :Attention: meaning of node_idx is different(reversed) when single_graph is different!!!
+
+    :param node_idx when single_graph is True -- is the node that uniquness to the given data object,
+    :param node_idx when single_graph is False -- it represent node that should be removed in given node set!!!
+
+    :return self.target_node -- whatever how node_idx and single_graph changed, it always present node to be Uniquness
+    to the given Data object
+    """
+    batch_nodes = np.array(sorted(self.unique_nodes))
+    if single_graph:
+      # self.target_node_mask = np.isin(batch_nodes, sorted(node_idx))
+      self.target_node = self.unique_nodes & set(node_idx)
+    else:
+      t_transfer_map = np.vectorize(t_hash_table.get)
+      t1_transfer_map = np.vectorize(self.hash_table.get)
+
+      seen_nodes = t_transfer_map(node_idx)
+      test_seen_nodes = t1_transfer_map(batch_nodes)
+      
+      # test_node represent node idx that has NOT been seen in validation and train data
+      test_node = set(test_seen_nodes) - set(seen_nodes)
+      reverse_test_hashtable = {v:k for k, v in self.hash_table.items()}
+      t1_back_transfer = np.vectorize(reverse_test_hashtable.get)
+      self.target_node = t1_back_transfer(sorted(test_node))
+
+      # self.target_node = self.unique_nodes - set(t_test_node)
+
+    src_mask = np.isin(self.sources, sorted(self.target_node))
+    dst_mask = np.isin(self.destinations, sorted(self.target_node))
+
+    new_test_mask = src_mask*dst_mask
+
+    return self.inductive_test(new_test_mask)
+
+  def call_for_inductive_nodes(self, val_data: 'Data', test_data: 'Data', single_graph: bool):
+    validation_node: set = val_data.unique_nodes
+    test_node: set = test_data.unique_nodes
+    train_node = self.unique_nodes
+
+    common_share = validation_node & test_node & train_node
+    train_val_share = validation_node & train_node
+    train_test_share = train_node & test_node
+    val_test_share = validation_node & test_node
+
+    expected_val = list(validation_node - (common_share | train_val_share))
+    new_val = val_data.inductive_back_propogation(expected_val, single_graph=True)
+    new_test= None
+
+    if single_graph:
+      expected_test = list(test_node - (train_test_share | common_share | val_test_share))
+      new_test = test_data.inductive_back_propogation(expected_test, single_graph = single_graph)
+    else:
+      t_times_common_data = list(train_test_share | common_share | val_test_share)
+      t_times_hash_table = val_data.hash_table
+      new_test = test_data.inductive_back_propogation(t_times_common_data, single_graph, t_times_hash_table)
+
+    assert len(set(expected_val) & train_node) == 0, "train_node data is exposed to validation set"
+    if single_graph:
+      assert len(set(expected_test) & train_node & set(expected_val)) == 0, "train node and val data has interacted with test data"
+
+    return new_val, new_test
+
+  # For edge inductive test and single graph
+  def edge_mask(self, data: 'Data', test_element: set):
+    test_element = sorted(test_element)
+    src_mask = ~np.isin(data.sources, test_element)
+    dst_mask = ~np.isin(data.destinations, test_element)
+    return src_mask & dst_mask
+
+  def cover_the_edges(self, val_data: 'Data', test_data: 'Data', single_graph: bool = True):
+    """
+    delete both edges and nodes appeared in train_data to make pure inductive val_data \n
+    also, delete both edges and nodes appeared in train_data and val_data to make pure inductive test_data
+    """
+    valid_node = val_data.unique_nodes
+    test_node = test_data.unique_nodes
+    train_node = self.unique_nodes
+
+    # common_share = valid_node & test_node & train_node
+    train_val_share = valid_node & train_node
+    train_test_share = train_node & test_node
+    val_test_share = valid_node & test_node
+
+    node_2be_removed_val = train_val_share
+    node_2be_removed_test = val_test_share | train_test_share
+
+    val_data.edge_propagate_back(self.edge_mask(val_data, node_2be_removed_val))
+    test_data.edge_propagate_back(self.edge_mask(test_data, node_2be_removed_test))
+
+    return
+
+  def inductive_test(self, edge_mask: np.ndarray) -> 'Data':
+    self.inductive_edge_mask = edge_mask
+    src, dst = self.sources[edge_mask], self.destinations[edge_mask]
+    tsp, edge_idx = self.timestamps[edge_mask], self.edge_idxs[edge_mask]
+    y, hash_table = self.labels, self.hash_table
+
+    return Data(sources=src, destinations=dst, timestamps=tsp, \
+                edge_idxs=edge_idx, labels=y, hash_table=hash_table, node_feat=self.node_feat, edge_feat=self.edge_feat)
+
+
+  def edge_propagate_back(self, edge_mask: np.ndarray):
+    """
+    keep the edge mask as permanent variable and modify edge \n
+    maintain edges to inductive edge mask
+    """
+    self.inductive_edge_mask = edge_mask
+    self.sources = self.sources[self.inductive_edge_mask]
+    self.destinations = self.destinations[self.inductive_edge_mask]
+    self.timestamps = self.timestamps[self.inductive_edge_mask]
+
+  def sample(self,ratio):
+    data_size=self.n_interactions
+    sample_size=int(ratio*data_size)
+    sample_inds=random.sample(range(data_size),sample_size)
+    sample_inds=np.sort(sample_inds)
+    sources=self.sources[sample_inds]
+    destination=self.destinations[sample_inds]
+    timestamps=self.timestamps[sample_inds]
+    edge_idxs=self.edge_idxs[sample_inds]
+    labels=self.labels[sample_inds]
+    return Data(sources,destination,timestamps,edge_idxs,labels)
 
 def quantile_(threshold: float, timestamps: torch.Tensor) -> tuple[torch.Tensor]:
   full_length = timestamps.shape[0]
@@ -44,13 +180,17 @@ def to_TPPR_Data(graph: Temporal_Dataloader) -> Data:
     labels = graph.y
 
     hash_dataframe = copy.deepcopy(graph.my_n_id.node.loc[:, ["index", "node"]].values.T)
-    hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
     
-    if np.any(graph.edge_attr != None):
-        edge_attr = graph.edge_attr
+    """
+    :param hash_table, should be a matching list, now here it is refreshed idx : origin idx,
+    """
+    hash_table: dict[int, int] = {idx: node for idx, node in zip(*hash_dataframe)}
+    
     if np.any(graph.pos != None):
-        pos = graph.pos
-        pos = pos.numpy() if isinstance(pos, torch.Tensor) else pos
+        node_pos, edge_pos = graph.pos
+        def pos2numpy(pos: Optional[Tensor | ndarray] | Any) -> Optional[ndarray|Any]:
+           return pos.numpy() if isinstance(pos, Tensor) else pos
+        pos = (pos2numpy(node_pos), pos2numpy(edge_pos))
     else:
         pos = graph.x
 
@@ -94,8 +234,16 @@ def get_data_TGAT(dataset_name, snapshot: int, views: int) -> tuple[list[Data|in
         timestamp = full_data.timestamps
         train_mask, val_mask = quantile_(threshold=0.85, timestamps=timestamp)
 
-        hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
-        hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)}
+        # hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
+        """
+        :feature -- TGN-Link will refresh node idx in each temporal graph, so here should use new node idx to match origin node
+        Why? Becuase in Zebra-node it maintain a global tppr matrix and embedding output, thus in function
+        :func - Temporal_Splitting(graph).temporal_spliting(*param) it wont call temporal_splitting(*param) to rebuild node idx
+        So, in Zebra-node it maintain a original node : new node logic. 
+        in TGN-link, it will re-build node idx for each temproal node, so it should be new node idx : original node idx!!
+        """
+        # hash_table: dict[int, int] = {node: idx for idx, node in zip(*hash_dataframe)} # should be idx : node !!
+        hash_table = full_data.hash_table
 
         edge_train_feat = full_data.edge_feat[train_mask]
         edge_val_feat = full_data.edge_feat[val_mask]
@@ -111,10 +259,13 @@ def get_data_TGAT(dataset_name, snapshot: int, views: int) -> tuple[list[Data|in
         else:
             test = graph_list[idxs+1]
             test_data = to_TPPR_Data(test)
+            
+        nn_val, nn_test = train_data.call_for_inductive_nodes(val_data, test_data, single_graph)
+        
         node_num = items.num_nodes
         node_edges = items.num_edges
 
-        TPPR_list.append([full_data, train_data, val_data, test_data, node_num, node_edges])
+        TPPR_list.append([full_data, train_data, val_data, nn_val, test_data, nn_test, node_num, node_edges])
 
 
     return TPPR_list, graph_num_node, graph_feat, edge_number

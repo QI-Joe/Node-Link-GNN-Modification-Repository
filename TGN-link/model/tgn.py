@@ -276,3 +276,16 @@ class TGN(torch.nn.Module):
   def set_neighbor_finder(self, neighbor_finder):
     self.neighbor_finder = neighbor_finder
     self.embedding_module.neighbor_finder = neighbor_finder
+    
+  def train_val_backup(self):
+    self.embedding_module.train_val_backup()
+
+  def update4test(self, ngh_finder, node_features: np.ndarray, edge_features: np.ndarray):
+    self.neighbor_finder = ngh_finder
+    self.train_val_backup()
+    node_raw_features = torch.from_numpy(node_features.astype(np.float32)).to(self.device)
+    edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(self.device)
+    self.embedding_module.test_updater(ngh_finder, node_raw_features, edge_raw_features)
+
+  def restore_test_emb(self):
+    self.embedding_module.restore_test_emb()

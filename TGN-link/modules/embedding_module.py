@@ -23,11 +23,31 @@ class EmbeddingModule(nn.Module):
     self.dropout = dropout
     self.embedding_dimension = embedding_dimension
     self.device = device
+    self.node_features_backup = None
+    self.edge_feature_backup = None
 
   def compute_embedding(self, memory, source_nodes, timestamps, n_layers, n_neighbors=20, time_diffs=None,
                         use_time_proj=True):
     return NotImplemented
 
+  def train_val_backup(self):
+    # self.neighbor_finder_backup = self.neighbor_finder
+    self.node_features_backup = self.node_features
+    self.edge_feature_backup = self.edge_features
+
+  def test_updater(self, ngh_finder, node_features, edge_features):
+    self.neighbor_finder = ngh_finder
+    self.node_features = node_features
+    self.edge_features = edge_features
+
+  def restore_test_emb(self):
+    # self.neighbor_finder = self.neighbor_finder_backup
+    self.node_features = self.node_features_backup
+    self.edge_features = self.edge_feature_backup
+
+  def backup_release(self):
+    self.node_features_backup = None
+    self.edge_feature_backup = None
 
 class IdentityEmbedding(EmbeddingModule):
   def compute_embedding(self, memory, source_nodes, timestamps, n_layers, n_neighbors=20, time_diffs=None,

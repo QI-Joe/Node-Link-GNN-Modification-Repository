@@ -18,7 +18,7 @@ np.random.seed(0)
 ### Argument and global variables
 parser = argparse.ArgumentParser('TGN self-supervised training')
 parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',
-                    default='dblp')
+                    default='mooc')
 parser.add_argument('--bs', type=int, default=200, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
@@ -109,24 +109,26 @@ def compute_value(x, threshold):
   return lists
 
 for i in range(VIEW):
-  full_data, train_data, val_data, test_data, n_nodes, n_edges = temporaloader[i]
+  full_data, train_data, val_data, nn_val, test_data, nn_test, n_nodes, n_edges = temporaloader[i]
   # Initialize training neighbor finder to retrieve temporal graph
   train_ngh_finder = get_neighbor_finder(train_data, args.uniform)
 
   # Initialize validation and test neighbor finder to retrieve temporal graph
   full_ngh_finder = get_neighbor_finder(full_data, args.uniform)
+  
+  test_ngh_finder = get_neighbor_finder(test_data, args.uniform)
 
   # Initialize negative samplers. Set seeds for validation and testing so negatives are the same
   # across different runs
   # NB: in the inductive setting, negatives are sampled only amongst other new nodes
   train_rand_sampler = RandEdgeSampler(train_data.sources, train_data.destinations)
   val_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=0)
-  # nn_val_rand_sampler = RandEdgeSampler(new_node_val_data.sources, new_node_val_data.destinations,
-  #                                       seed=1)
+  nn_val_rand_sampler = RandEdgeSampler(nn_val.sources, nn_val.destinations,
+                                        seed=1)
   test_rand_sampler = RandEdgeSampler(test_data.sources, test_data.destinations, seed=2)
-  # nn_test_rand_sampler = RandEdgeSampler(new_node_test_data.sources,
-  #                                       new_node_test_data.destinations,
-  #                                       seed=3)
+  nn_test_rand_sampler = RandEdgeSampler(nn_test.sources,
+                                        nn_test.destinations,
+                                        seed=3)
 
   # Set device
   device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
@@ -238,6 +240,9 @@ for i in range(VIEW):
     epoch_time = time.time() - start_epoch
     epoch_times.append(epoch_time)
 
+    if (epoch+1) % epoch_tester != 0 :
+      continue
+    
     ### Validation
     # Validation uses the full graph
     tgn.set_neighbor_finder(full_ngh_finder)
@@ -248,9 +253,9 @@ for i in range(VIEW):
       train_memory_backup = tgn.memory.backup_memory()
 
     val_ap, val_auc = eval_edge_prediction(model=tgn,
-                                                            negative_edge_sampler=val_rand_sampler,
-                                                            data=val_data,
-                                                            n_neighbors=NUM_NEIGHBORS)
+                                          negative_edge_sampler=val_rand_sampler,
+                                          data=val_data,
+                                          n_neighbors=NUM_NEIGHBORS)
     if USE_MEMORY:
       val_memory_backup = tgn.memory.backup_memory()
       # Restore memory we had at the end of training to be used when validating on new nodes.
@@ -261,7 +266,7 @@ for i in range(VIEW):
     # Validate on unseen nodes
     nn_val_ap, nn_val_auc = eval_edge_prediction(model=tgn,
                                                   negative_edge_sampler=val_rand_sampler,
-                                                  data=new_node_val_data,
+                                                  data=nn_val,
                                                   n_neighbors=NUM_NEIGHBORS)
 
     if USE_MEMORY:
@@ -291,6 +296,7 @@ for i in range(VIEW):
       tgn.eval()
       break
 
+  tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
   # Training has finished, we have loaded the best model, and we want to backup its current
   # memory (which has seen validation edges) so that it can also be used when testing on unseen
   # nodes
@@ -308,15 +314,18 @@ for i in range(VIEW):
     tgn.memory.restore_memory(val_memory_backup)
 
   # Test on unseen nodes
-  # nn_test_ap, nn_test_auc = eval_edge_prediction(model=tgn,
-  #                                               negative_edge_sampler=nn_test_rand_sampler,
-  #                                               data=new_node_test_data,
-  #                                               n_neighbors=NUM_NEIGHBORS)
+  nn_test_ap, nn_test_auc = eval_edge_prediction(model=tgn,
+                                                negative_edge_sampler=nn_test_rand_sampler,
+                                                data=nn_test,
+                                                n_neighbors=NUM_NEIGHBORS)
 
-  # print('Test statistics: Old nodes -- auc: {}, ap: {}'.format(test_auc, test_ap))
-  # print('Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
+  print('Test statistics: Old nodes -- auc: {}, ap: {}'.format(test_auc, test_ap))
+  print('Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
   # Save results for this run
 
   if USE_MEMORY:
     # Restore memory at the end of validation (save a model which is ready for testing)
     tgn.memory.restore_memory(val_memory_backup)
+  
+  tgn.restore_test_emb()
+  tgn.embedding_module.backup_release()
