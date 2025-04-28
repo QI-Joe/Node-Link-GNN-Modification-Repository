@@ -22,7 +22,7 @@ from sklearn.preprocessing import scale
 MOOC, Mooc_extra = "Temporal_Dataset/act-mooc/act-mooc/", ["mooc_action_features", "mooc_action_labels", "mooc_actions"]
 MATHOVERFLOW, MathOverflow_extra = "Temporal_Dataset/mathoverflow/", ["sx-mathoverflow-a2q", "sx-mathoverflow-c2a", "sx-mathoverflow-c2q", "sx-mathoverflow"]
 OVERFLOW = r"Temporal_Dataset/"
-STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow"]
+STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow", "mooc"]
 DYNAMIC = ["mathoverflow", "askubuntu", "stackoverflow"]
 
 class NodeIdxMatching(object):
@@ -46,6 +46,8 @@ class NodeIdxMatching(object):
         else:
             if not isinstance(nodes, (np.ndarray, list, torch.Tensor)): 
                 nodes = list(nodes)
+            if len(nodes) < len(label):
+                label = np.arange(len(nodes))
             self.nodes = self.to_numpy(nodes)
             self.node: pd.DataFrame = pd.DataFrame({"node": nodes, "label": label}).reset_index()
 
@@ -345,8 +347,10 @@ class Temporal_Splitting(object):
             T = [span * i / (snapshots-1) for i in range(1, snapshots)]
             if views > snapshots:
                 return "The number of sampled views exceeds the maximum value of the current policy."
-            T = random.sample(T, views)
+        T = random.sample(T, views)
         T= sorted(T)
+        if span not in T:
+            T[-1] = span
         if T[0] == float(0):
             T.pop(0)
         return T
@@ -452,8 +456,7 @@ class Temporal_Splitting(object):
             sampled_edges = edge_index[:, sample_time]
             sampled_nodes = np.unique(sampled_edges) # orignal/gobal node index
 
-            y = self.n_id.get_label_by_node(sampled_nodes)
-            y = np.array(y)
+            y = self.graph.y[sample_time] # in edge prediction task, y should be the same length of edges
             nodepos, edgepos = pos
             subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos[sample_time])
 
@@ -525,6 +528,12 @@ def get_combination(labels: list[int]) -> dict:
             outer_ptr += 1
     return combination
 
+def load_mooc(path:str=None) -> Tuple[pd.DataFrame]:
+    feat = pd.read_csv(os.path.join(path, "mooc_action_features.tsv"), sep = '\t')
+    general = pd.read_csv(os.path.join(path, "mooc_actions.tsv"), sep = '\t')
+    edge_label = pd.read_csv(os.path.join(path, "mooc_action_labels.tsv"), sep = '\t')
+    return general, feat, edge_label
+
 def load_static_overflow(prefix: str, path: str=None, *wargs) -> tuple[Data, NodeIdxMatching]:
     dataset = "sx-"+prefix
     path = OVERFLOW + prefix + r"/static"
@@ -583,6 +592,30 @@ def load_standard(dataset: str, *wargs) -> tuple[Data, NodeIdxMatching]:
     dataset = get_dataset(path, dataset)
     return dataset
 
+def edge_load_mooc(dataset:str):
+    auto_path = r"../../TestProject/Temporal_Dataset/act-mooc/act-mooc" # ../../TestProejct/Temporal_Dataset/act-mooc/act-mooc
+    edge, feat, label = load_mooc(auto_path)
+    # for edge, its column idx is listed as ["ACTIONID", "USERID", "TARGETID", "TIMESTAMP"]
+    edge = edge.values
+    edge_idx, src2dst, timestamp = edge[:, 0], edge[:, 1:3].T, edge[:, 3]
+    
+    print(src2dst.dtype, src2dst.shape)
+    src2dst = src2dst.astype(np.int64)
+    
+    edge_pos = feat.iloc[:, 1:].values
+    y = label.iloc[:, 1].values
+    
+    node = np.unique(src2dst).astype(np.int64)
+    max_node = int(np.max(node)) + 1
+    if dataset == "mooc":
+        node = np.unique(src2dst[0])
+    node_pos = position_encoding(max_node, 64).numpy()
+    # edge_pos = time_encoding(timestamp)
+    
+    pos = (node_pos, edge_pos)
+    graph = Data(x = node, edge_index=src2dst, edge_attr=timestamp, y = y, pos = pos)
+    return graph
+
 def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim: int = 64, *wargs) -> tuple[Temporal_Dataloader, NodeIdxMatching]:
     """
     Now this txt file only limited to loading data in from mathoverflow datasets
@@ -593,6 +626,8 @@ def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim
         edges, label = load_static_overflow(dataset) if not path else load_static_overflow(dataset, path)
     elif dataset == "dblp":
         edges, label = load_dblp_interact() if not path else load_dblp_interact(path)
+    elif dataset == "mooc":
+        return edge_load_mooc(dataset), None
 
     x = label.node.to_numpy()
     nodes = position_encoding(x.max()+1, fea_dim)[x].numpy()

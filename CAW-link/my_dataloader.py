@@ -22,7 +22,7 @@ from sklearn.preprocessing import scale
 MOOC, Mooc_extra = "Temporal_Dataset/act-mooc/act-mooc/", ["mooc_action_features", "mooc_action_labels", "mooc_actions"]
 MATHOVERFLOW, MathOverflow_extra = "Temporal_Dataset/mathoverflow/", ["sx-mathoverflow-a2q", "sx-mathoverflow-c2a", "sx-mathoverflow-c2q", "sx-mathoverflow"]
 OVERFLOW = r"Temporal_Dataset/"
-STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow"]
+STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow", "mooc"]
 DYNAMIC = ["mathoverflow", "askubuntu", "stackoverflow"]
 
 class NodeIdxMatching(object):
@@ -46,6 +46,8 @@ class NodeIdxMatching(object):
         else:
             if not isinstance(nodes, (np.ndarray, list, torch.Tensor)): 
                 nodes = list(nodes)
+            if len(label) > len(nodes):
+                label = np.arange(len(nodes))
             self.nodes = self.to_numpy(nodes)
             self.node: pd.DataFrame = pd.DataFrame({"node": nodes, "label": label}).reset_index()
 
@@ -532,6 +534,36 @@ def load_static_overflow(prefix: str, path: str=None, *wargs) -> tuple[Data, Nod
     label = pd.read_csv(os.path.join(path, "node2label.txt"), sep=' ', names=['node', 'label'])
     return edges, label
 
+def load_mooc(path:str=None) -> Tuple[pd.DataFrame]:
+    feat = pd.read_csv(os.path.join(path, "mooc_action_features.tsv"), sep = '\t')
+    general = pd.read_csv(os.path.join(path, "mooc_actions.tsv"), sep = '\t')
+    edge_label = pd.read_csv(os.path.join(path, "mooc_action_labels.tsv"), sep = '\t')
+    return general, feat, edge_label
+
+def edge_load_mooc(dataset:str):
+    auto_path = r"../../TestProejct/Temporal_Dataset/act-mooc/act-mooc"
+    edge, feat, label = load_mooc(auto_path)
+    # for edge, its column idx is listed as ["ACTIONID", "USERID", "TARGETID", "TIMESTAMP"]
+    edge = edge.values
+    edge_idx, src2dst, timestamp = edge[:, 0], edge[:, 1:3].T, edge[:, 3]
+    
+    print(src2dst.dtype, src2dst.shape)
+    src2dst = src2dst.astype(np.int64)
+    
+    edge_pos = feat.iloc[:, 1:].values
+    y = label.iloc[:, 1].values
+    
+    node = np.unique(src2dst).astype(np.int64)
+    max_node = int(np.max(node)) + 1
+    if dataset == "mooc":
+        node = np.unique(src2dst[0])
+    node_pos = position_encoding(max_node, 64).numpy()
+    # edge_pos = time_encoding(timestamp)
+    
+    pos = (node_pos, edge_pos)
+    graph = Data(x = node, edge_index=src2dst, edge_attr=timestamp, y = y, pos = pos)
+    return graph
+
 def load_dynamic_overflow(prefix: str, path: str=None, *wargs) -> tuple[pd.DataFrame, dict]:
     dataset = prefix
     path = OVERFLOW + prefix + r"/dynamic"
@@ -593,6 +625,8 @@ def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim
         edges, label = load_static_overflow(dataset) if not path else load_static_overflow(dataset, path)
     elif dataset == "dblp":
         edges, label = load_dblp_interact() if not path else load_dblp_interact(path)
+    elif dataset == "mooc":
+        return edge_load_mooc(dataset), None
 
     x = label.node.to_numpy()
     nodes = position_encoding(x.max()+1, fea_dim)[x].numpy()

@@ -15,19 +15,26 @@ from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_sco
 from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning, NumbaTypeSafetyWarning
 from utils.my_dataloader import to_cuda, Temporal_Splitting, Temporal_Dataloader, data_load
 from itertools import chain
+from evaluation.time_evaluation import TimeRecord
 
 import warnings
 warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaTypeSafetyWarning)
 
+very_start = time.time()
 def str2bool(order: str)->bool:
   if order in ["True", "1"]:
     return True
   return False
 
+def fast_to_hms(seconds):
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return hours, minutes, seconds
+
 parser = argparse.ArgumentParser('Self-supervised training with diffusion models')
-parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='dblp')
+parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',default='mooc')
 parser.add_argument('--bs', type=int, default=1000, help='Batch_size')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=7, help='Number of heads used in attention layer')
@@ -35,7 +42,7 @@ parser.add_argument('--n_epoch', type=int, default=100, help='Number of epochs')
 parser.add_argument('--n_layer', type=int, default=2, help='Number of network layers')
 parser.add_argument('--lr', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
-parser.add_argument('--snapshot', type=int, default=10, help='Number of runs')
+parser.add_argument('--snapshot', type=int, default=7, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.3, help='Dropout probability')
 parser.add_argument('--gpu', type=int, default=0, help='Idx for the gpu to use')
 parser.add_argument('--use_memory', default=True, type=bool, help='Whether to augment the model with a node memory')
@@ -78,7 +85,7 @@ TIME_DIM = args.time_dim
 MEMORY_DIM = args.memory_dim
 BATCH_SIZE = args.bs
 dynamic: bool = args.dynamic
-epoch_tester: int = 10
+epoch_tester: int = 1
 SNAPSHOT = args.snapshot
 
 round_list, graph_num, graph_feature, edge_num = get_data_TPPR(DATA, snapshot=SNAPSHOT, views=SNAPSHOT-2)
@@ -87,10 +94,35 @@ device = torch.device(device_string)
 
 training_strategy = "node"
 NODE_DIM = round_list[0][0].node_feat.shape[1]
+MEMORY_DIM = NODE_DIM
 test_record = []
+global_edge_feats = graph_feature[1]
+args.n_nodes = graph_feature[0].shape[0] + 1
+args.n_edges = graph_feature[1].shape[0] + 1
+
+tgn = TGN(edge_features=global_edge_feats, device=device, # neighbor_finder=train_ngh_finder, node_features=node_feats, 
+            n_layers=NUM_LAYER,n_heads=NUM_HEADS, dropout=DROP_OUT, use_memory=USE_MEMORY,
+            node_dimension = NODE_DIM, time_dimension = TIME_DIM, memory_dimension=MEMORY_DIM,
+            embedding_module_type=args.embedding_module, 
+            message_function=args.message_function, 
+            aggregator_type=args.aggregator,
+            memory_updater_type=args.memory_updater,
+            n_neighbors=NUM_NEIGHBORS,
+            use_destination_embedding_in_message=args.use_destination_embedding_in_message,
+            use_source_embedding_in_message=args.use_source_embedding_in_message,
+            args=args)
+
+snapshot_list = list()
+rscore, rpresent = TimeRecord(model_name="TGAT"), TimeRecord(model_name="TGAT")
+rscore.get_dataset(DATA)
+rpresent.get_dataset(DATA)
+rscore.set_up_logger(name="time_logger")
+rpresent.set_up_logger()
+rpresent.record_start()
+logger = rpresent.score_log_handler
 
 for i in range(len(round_list)):
-
+  temporal_very_start = time.time()
   full_data, train_data, val_data, nn_val, test_data, nn_test, n_nodes, n_edges = round_list[i]
   args.n_nodes = n_nodes +1
   args.n_edges = n_edges +1
@@ -115,23 +147,24 @@ for i in range(len(round_list)):
 
   train_rand_sampler = RandEdgeSampler(train_data.sources, train_data.destinations)
   val_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=0)
-  test_rand_sampler = RandEdgeSampler(full_data.sources, full_data.destinations, seed=2)
+  test_rand_sampler = RandEdgeSampler(test_data.sources, test_data.destinations, seed=2)
 
-  # nn_val_rand_sampler = RandEdgeSampler(new_node_val_data.sources, new_node_val_data.destinations,seed=1)
+  nn_val_rand_sampler = RandEdgeSampler(nn_val.sources, nn_val.destinations, seed=1)
   nn_test_rand_sampler = RandEdgeSampler(nn_test.sources, nn_test.destinations, seed=3)
 
-  tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_feats, edge_features=edge_feats, device=device,
-            n_layers=NUM_LAYER,n_heads=NUM_HEADS, dropout=DROP_OUT, use_memory=USE_MEMORY,
-            node_dimension = NODE_DIM, time_dimension = TIME_DIM, memory_dimension=MEMORY_DIM,
-            embedding_module_type=args.embedding_module, 
-            message_function=args.message_function, 
-            aggregator_type=args.aggregator,
-            memory_updater_type=args.memory_updater,
-            n_neighbors=NUM_NEIGHBORS,
-            use_destination_embedding_in_message=args.use_destination_embedding_in_message,
-            use_source_embedding_in_message=args.use_source_embedding_in_message,
-            args=args)
-
+  # tgn = TGN(neighbor_finder=train_ngh_finder, node_features=node_feats, edge_features=edge_feats, device=device,
+  #           n_layers=NUM_LAYER,n_heads=NUM_HEADS, dropout=DROP_OUT, use_memory=USE_MEMORY,
+  #           node_dimension = NODE_DIM, time_dimension = TIME_DIM, memory_dimension=MEMORY_DIM,
+  #           embedding_module_type=args.embedding_module, 
+  #           message_function=args.message_function, 
+  #           aggregator_type=args.aggregator,
+  #           memory_updater_type=args.memory_updater,
+  #           n_neighbors=NUM_NEIGHBORS,
+  #           use_destination_embedding_in_message=args.use_destination_embedding_in_message,
+  #           use_source_embedding_in_message=args.use_source_embedding_in_message,
+  #           args=args)
+  tgn.update4node_num(args.n_nodes, device)
+  tgn.update4temporal_graph(train_ngh_finder, edge_feats)
   criterion = torch.nn.BCELoss()
   optimizer = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
   tgn = tgn.to(device)
@@ -144,9 +177,13 @@ for i in range(len(round_list)):
 
   train_tppr_time=[]
   tppr_filled = False
+  test_tppr_filled=False
   train_tppr_backup, val_tppr_backup = None, None
+  score_recorder = list()
 
   for epoch in range(NUM_EPOCH):
+    print(f"the start of epoch {epoch}")
+    logger.info(f"the start of epoch {epoch}")
     t_epoch_train_start = time.time()
     tgn.reset_timer()
     train_data = train_data
@@ -229,20 +266,22 @@ for i in range(len(round_list)):
       train_tppr_backup = tgn.embedding_module.backup_tppr()
 
     val_ap, val_auc, val_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=val_rand_sampler, data=val_data, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
-
+    
+    ### transductive test backup of validation process
     val_memory_backup = tgn.memory.backup_memory()
     if args.tppr_strategy=='streaming':
       val_tppr_backup = tgn.embedding_module.backup_tppr()
+    
     tgn.memory.restore_memory(train_memory_backup)
     if args.tppr_strategy=='streaming':
       tgn.embedding_module.restore_tppr(train_tppr_backup)
 
     ### inductive val
-    nn_val_ap, nn_val_auc, nn_val_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=val_rand_sampler, data=nn_val, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
+    nn_val_ap, nn_val_auc, nn_val_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=nn_val_rand_sampler, data=nn_val, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
+    
     tgn.memory.restore_memory(val_memory_backup)
     if args.tppr_strategy=='streaming':
       tgn.embedding_module.restore_tppr(val_tppr_backup)
-
 
     epoch_val_time = time.time() - t_epoch_val_start
     t_total_epoch_val += epoch_val_time
@@ -252,32 +291,36 @@ for i in range(len(round_list)):
     print('val auc: {}, new node val auc: {}'.format(val_auc, nn_val_auc))
     print('val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
     print('val acc: {}, new node val acc: {}'.format(val_acc, nn_val_acc))
+    
+    logger.info('epoch: {}, tppr: {}, train: {}, val: {}'.format(epoch_id, epoch_tppr_time, epoch_train_time, epoch_val_time))
+    logger.info('train auc: {}, train ap: {}, train acc: {}, train loss: {}'.format(train_auc, train_ap, train_acc, train_loss))
+    logger.info('val auc: {}, new node val auc: {}'.format(val_auc, nn_val_auc))
+    logger.info('val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
+    logger.info('val acc: {}, new node val acc: {}'.format(val_acc, nn_val_acc))
 
 
     last_best_epoch=early_stopper.best_epoch
     if early_stopper.early_stop_check(val_ap):
       stop_epoch=epoch_id
-      # model_parameters,tgn.memory=torch.load(best_checkpoint_path)
-      # tgn.load_state_dict(model_parameters)
       tgn.eval()
       break
-
 
     ######################  Evaludate Model on the Test Dataset #######################
     t_test_start=time.time()
 
-    ### transductive test backup of validation process
-    val_memory_backup = tgn.memory.backup_memory()
+    test_n_nodes = test_data.node_feat.shape[0] + 1
+    tgn.update4test(test_ngh_finder, test_n_nodes, test_data.edge_feat)
+    
     if args.tppr_strategy=='streaming':
-      val_tppr_backup = tgn.embedding_module.backup_tppr()
-
-    tgn.update4test(test_ngh_finder, test_data.edge_feat)
+      """
+      TODO: Truncate the test_data based on length of full_data to (seen data / unseen T-T+1 moment), and provide cache memory or not
+      """
+      tgn.embedding_module.reset_tppr()
+      tgn.embedding_module.fill_tppr(train_data.sources, train_data.destinations, train_data.timestamps, train_data.edge_idxs, tppr_filled)
+      tppr_filled = True
+    
     test_ap, test_auc, test_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=test_rand_sampler, \
                                 data=test_data, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
-
-    tgn.memory.restore_memory(val_memory_backup)
-    if args.tppr_strategy=='streaming':
-      tgn.embedding_module.restore_tppr(val_tppr_backup)
 
     ### inductive test
     nn_test_ap, nn_test_auc, nn_test_acc = eval_edge_prediction(model=tgn, negative_edge_sampler= nn_test_rand_sampler, data=nn_test, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
@@ -289,5 +332,41 @@ for i in range(len(round_list)):
     
     print('Test statistics: Old nodes -- auc: {}, ap: {}, acc: {}'.format(test_auc, test_ap, test_acc))
     print('Test statistics: New nodes -- auc: {}, ap: {}, acc: {}'.format(nn_test_auc, nn_test_ap, nn_test_acc))
+    
+    logger.info('Test statistics: Old nodes -- auc: {}, ap: {}, acc: {}'.format(test_auc, test_ap, test_acc))
+    logger.info('Test statistics: New nodes -- auc: {}, ap: {}, acc: {}'.format(nn_test_auc, nn_test_ap, nn_test_acc))
+    
     tgn.restore_test_emb()
     tgn.embedding_module.backup_release()
+    
+    validation_dict = {
+      "val_acc": val_acc,
+      "val_ap": val_ap,
+      "val_auc": val_auc,
+      "test_acc": test_acc,
+      "test_ap": test_ap,
+      "test_auc": test_auc,
+      "test_new_old_acc": nn_test_acc if 'nn_test_acc' in locals() else None,
+      "test_new_old_auc": nn_test_auc if 'nn_test_auc' in locals() else None,
+      "test_new_old_ap": nn_test_ap
+    }
+    
+    score_recorder.append(validation_dict)
+  
+  
+  rpresent.score_record(temporal_score_=score_recorder, node_size=full_data.node_feat.shape[0], temporal_idx = i, epoch_interval=epoch_tester, mode='i')
+  temporal_very_end = time.time() - temporal_very_start
+  th, tm, ts = fast_to_hms(temporal_very_end)
+  print(f"Running time for {th} hours, {tm} minutes, {ts} seconds")
+  logger.info(f"Running time for {th} hours, {tm} minutes, {ts} seconds")
+  
+  snapshot_list.append(score_recorder)
+    
+rpresent.record_end()
+rscore.record_end()
+rscore.fast_processing('i', snapshot_list)
+    
+very_end = time.time() - very_start
+h,m,s = fast_to_hms(very_end)
+print(f"Running time for {h} hours, {m} minutes, {s} seconds")
+logger.info(f"Running time for {h} hours, {m} minutes, {s} seconds")

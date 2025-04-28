@@ -66,6 +66,12 @@ class Data:
     dst_mask = np.isin(self.destinations, sorted(self.target_node))
 
     new_test_mask = src_mask*dst_mask
+    if src_mask.sum()==0 or dst_mask.sum() == 0:
+      new_test_mask = src_mask | dst_mask
+      src_uniq, src_freq = np.unique(src_mask, return_counts=True)
+      dst_uniq, dst_freq = np.unique(dst_mask, return_counts=True)
+      print("New Old mode activated, considering one side of edge full of old, seen data")
+      print("Source node uniquness {}, frequency {}, destination node uniquness {}, frequency".format(src_uniq, src_freq, dst_uniq, dst_freq))
 
     return self.inductive_test(new_test_mask)
 

@@ -20,3 +20,4 @@ best_models/
 saved_checkpoints/
 *.ipynb
 logs/
+test.py

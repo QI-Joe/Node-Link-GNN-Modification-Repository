@@ -11,10 +11,10 @@ def get_args():
 
     # select dataset and training mode
     parser.add_argument('-d', '--data', type=str, help='data sources to use, try wikipedia or reddit',
-                        choices=['wikipedia', 'reddit', 'dblp', 'cora'],
-                        default='dblp')
+                        choices=['mooc', 'reddit', 'dblp', 'cora'],
+                        default='mooc')
     parser.add_argument('--data_usage', default=1.0, type=float, help='fraction of data to use (0-1)')
-    parser.add_argument('-m', '--mode', type=str, default='t', choices=['t', 'i'], help='transductive (t) or inductive (i)')
+    parser.add_argument('-m', '--mode', type=str, default='i', choices=['t', 'i'], help='transductive (t) or inductive (i)')
 
     # method-related hyper-parameters
     parser.add_argument('--n_degree', nargs='*', default=['64', '1'],
@@ -24,7 +24,7 @@ def get_args():
     parser.add_argument('--agg', type=str, default='walk', choices=['tree', 'walk'],
                         help='tree based hierarchical aggregation or walk-based flat lstm aggregation, we only use the default here')
     parser.add_argument('--pos_enc', type=str, default='lp', choices=['spd', 'lp', 'saw'], help='way to encode distances, shortest-path distance or landing probabilities, or self-based anonymous walk (baseline)')
-    parser.add_argument('--pos_dim', type=int, default=176, help='dimension of the positional embedding')
+    parser.add_argument('--pos_dim', type=int, default=188, help='dimension of the positional embedding')
     parser.add_argument('--pos_sample', type=str, default='binary', choices=['multinomial', 'binary'], help='two equivalent sampling method with empirically different running time')
     parser.add_argument('--walk_pool', type=str, default='attn', choices=['attn', 'sum'], help='how to pool the encoded walks, using attention or simple sum, if sum will overwrite all the other walk_ arguments')
     parser.add_argument('--walk_n_head', type=int, default=8, help="number of heads to use for walk attention")

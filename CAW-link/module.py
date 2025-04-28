@@ -419,7 +419,7 @@ class CAWN(torch.nn.Module):
         self.pos_dim = pos_dim  # position feature dimension
         self.pos_enc = pos_enc
         self.model_dim = self.feat_dim + self.e_feat_dim + self.time_dim + self.pos_dim
-        print('neighbors: {}, node dim: {}, edge dim: {}, pos dim: {}, edge dim: {}'.format(self.num_neighbors, self.feat_dim, self.e_feat_dim, self.pos_dim, self.time_dim))
+        print('neighbors: {}, node dim: {}, edge dim: {}, pos dim: {}, time dim: {}'.format(self.num_neighbors, self.feat_dim, self.e_feat_dim, self.pos_dim, self.time_dim))
 
         # aggregation method
         self.agg = agg

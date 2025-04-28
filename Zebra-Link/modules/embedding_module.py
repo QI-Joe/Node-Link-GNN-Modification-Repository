@@ -32,6 +32,9 @@ class EmbeddingModule(nn.Module):
   def compute_embedding(self, memory, source_nodes, timestamps, n_layers, n_neighbors=20, time_diffs=None,use_time_proj=True):
     pass
 
+  def update_memory(self, memory):
+    self.memory = memory
+
   def train_val_backup(self):
     self.edge_feature_backup = self.edge_features
     
@@ -255,6 +258,10 @@ class GraphDiffusionEmbedding(GraphEmbedding):
     ### transform source embeddings
     nodes_0 = source_nodes
     nodes_0 = torch.from_numpy(nodes_0).long().to(self.device)
+    
+    if nodes_0.max() > memory.shape[0]:
+      raise Exception(f"memeory size here has problem, nodes_0 max {nodes_0.max()} with memory shape {memory.shape}")
+    
     source_embeddings = memory[nodes_0]
     source_embeddings=self.transform_source(source_embeddings)
 
@@ -263,10 +270,16 @@ class GraphDiffusionEmbedding(GraphEmbedding):
     for index,selected_nodes in enumerate(selected_node_list):
 
       # node features
+      if selected_nodes.max() > memory.shape[0]:
+        raise Exception(f"memory size here has problem at position 2, selected_nodes max {selected_nodes.max()} with memory shape {memory.shape}")
+      
       node_features = memory[selected_nodes]
 
       # edge features
       selected_edge_idxs=selected_edge_idxs_list[index]
+      
+      if selected_edge_idxs.shape[0] > self.edge_features.shape[0] or selected_edge_idxs.max() > self.edge_features.shape[0]:
+        raise Exception(f"edge features here has problem, selected_edge_idxs max {selected_edge_idxs.max()} with edge_features shape {self.edge_features.shape}")
       edge_features = self.edge_features[selected_edge_idxs, :] 
   
       # time encoding
@@ -336,6 +349,7 @@ class GraphDiffusionEmbedding(GraphEmbedding):
     return self.fc2_source(h)
 
   def transform(self,x):
+    x=x.float()
     h = self.act(self.fc1(x))
     h = self.drop(h)
     return self.fc2(h)

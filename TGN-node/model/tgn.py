@@ -289,6 +289,5 @@ class TGN(torch.nn.Module):
     edge_raw_features = torch.from_numpy(edge_features.astype(np.float32)).to(self.device)
     self.embedding_module.test_updater(ngh_finder, node_raw_features, edge_raw_features)
 
-
   def restore_test_emb(self):
     self.embedding_module.restore_test_emb()

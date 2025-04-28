@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import torch
 import time
-from utils.util import MergeLayer
+from utils.util import MergeLayer, NeighborFinder
 from modules.memory import Memory
 from modules.message_aggregator import get_message_aggregator
 from modules.message_function import get_message_function
@@ -12,7 +12,7 @@ from modules.embedding_module import get_embedding_module
 from model.time_encoding import TimeEncode
 
 class TGN(torch.nn.Module):
-  def __init__(self, neighbor_finder, node_features, edge_features, device, n_layers=2,
+  def __init__(self, edge_features, device, n_layers=2,  #  neighbor_finder, node_features, 
                n_heads=2, dropout=0.1, use_memory=False,
                node_dimension =100, time_dimension =100,
                memory_dimension=100, embedding_module_type="graph_attention",
@@ -31,7 +31,7 @@ class TGN(torch.nn.Module):
 
     self.batch_counter=0
     self.n_layers = n_layers
-    self.neighbor_finder = neighbor_finder
+    self.neighbor_finder = None
     self.device = device
     self.logger = logging.getLogger(__name__)
     self.args=args
@@ -62,6 +62,7 @@ class TGN(torch.nn.Module):
     
     # decide the message dimension
     message_dimension = message_dimension if message_function != "identity" else raw_message_dimension
+    self.message_dimension = message_dimension
     self.memory = Memory(n_nodes=self.n_nodes,
                         memory_dimension=self.memory_dimension,
                         input_dimension=message_dimension,
@@ -227,18 +228,37 @@ class TGN(torch.nn.Module):
 
 
   ######### set neighbor finder as a class member #########
+  def update4node_num(self, n_nodes: int, device):
+    self.memory = Memory(n_nodes=n_nodes, memory_dimension=self.memory_dimension,
+                        input_dimension= self.message_dimension,
+                        message_dimension = self.message_dimension,
+                        device = device)
+    self.embedding_module.update_memory(self.memory)
+  
   def set_neighbor_finder(self, neighbor_finder):
     self.neighbor_finder = neighbor_finder
     self.embedding_module.neighbor_finder = neighbor_finder
 
+  def update4temporal_graph(self, ngh_finder, edge_features: np.ndarray) -> None:
+    self.neighbor_finder = ngh_finder
+    edge_raw_feature = torch.from_numpy(edge_features.astype(np.float64)).to(self.device)
+    self.embedding_module.test_updater(ngh_finder=ngh_finder, edge_features=edge_raw_feature)
+
   def train_val_backup(self):
     self.embedding_module.train_val_backup()
+    self.memory_backup = self.memory
 
-  def update4test(self, ngh_finder, edge_features: np.ndarray) -> None:
+  def update4test(self, ngh_finder, test_n_nodes: int, edge_features: np.ndarray) -> None:
     self.neighbor_finder = ngh_finder
     self.train_val_backup()
     edge_raw_feature = torch.from_numpy(edge_features.astype(np.float64)).to(self.device)
     self.embedding_module.test_updater(ngh_finder=ngh_finder, edge_features=edge_raw_feature)
+    self.memory = Memory(n_nodes=test_n_nodes, memory_dimension=self.memory_dimension,
+                        input_dimension= self.message_dimension,
+                        message_dimension = self.message_dimension,
+                        device = self.device)
+    self.embedding_module.update_memory(self.memory)
   
   def restore_test_emb(self):
+    self.memory = self.memory_backup
     self.embedding_module.restore_test_emb()

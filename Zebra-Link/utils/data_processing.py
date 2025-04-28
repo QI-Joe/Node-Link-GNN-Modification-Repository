@@ -67,10 +67,17 @@ class Data:
     dst_mask = np.isin(self.destinations, sorted(self.target_node))
 
     new_test_mask = src_mask*dst_mask
+    if src_mask.sum()==0 or dst_mask.sum() == 0:
+      new_test_mask = src_mask | dst_mask
+      src_uniq, src_freq = np.unique(src_mask, return_counts=True)
+      dst_uniq, dst_freq = np.unique(dst_mask, return_counts=True)
+      print("New Old mode activated, considering one side of edge full of old, seen data")
+      print("Source node uniquness {}, frequency {}, destination node uniquness {}, frequency".format(src_uniq, src_freq, dst_uniq, dst_freq))
+
 
     return self.inductive_test(new_test_mask)
 
-  def call_for_inductive_nodes(self, val_data: 'Data', test_data: 'Data', single_graph: bool):
+  def call_for_inductive_nodes(self, val_data: 'Data', test_data: 'Data', single_graph: bool, test_val_equal: bool=False):
     validation_node: set = val_data.unique_nodes
     test_node: set = test_data.unique_nodes
     train_node = self.unique_nodes
@@ -83,6 +90,8 @@ class Data:
     expected_val = list(validation_node - (common_share | train_val_share))
     new_val = val_data.inductive_back_propogation(expected_val, single_graph=True)
     new_test= None
+    if test_val_equal:
+      return new_val, copy.deepcopy(new_val)
 
     if single_graph:
       expected_test = list(test_node - (train_test_share | common_share | val_test_share))
@@ -264,7 +273,8 @@ def get_data_TPPR(dataset_name, snapshot: int, views: int):
     single_graph = False
     if lenth < 2: 
         single_graph = True
-
+        
+    test_val_equal = False
     for idxs in range(0, lenth):
         # covert Temproal_graph object to Data object
         items = graph_list[idxs]
@@ -281,7 +291,13 @@ def get_data_TPPR(dataset_name, snapshot: int, views: int):
           train_mask, val_mask, test_mask = quantile_static(val=0.1, test=0.2,timestamps=timestamp)
 
         # hash_dataframe = copy.deepcopy(items.my_n_id.node.loc[:, ["index", "node"]].values.T)
-        # # Zebra-Link will refresh node idx in each temporal graph, so here should use new node idx to match origin node
+        """
+        :feature -- Zebra-Link will refresh node idx in each temporal graph, so here should use new node idx to match origin node
+        Why? Becuase in Zebra-node it maintain a global tppr matrix and embedding output, thus in function
+        :func - Temporal_Splitting(graph).temporal_spliting(*param) it wont call temporal_splitting(*param) to rebuild node idx
+        So, in Zebra-node it maintain a 'Dict[original node : new node]' logic. 
+        in Zebra-link, it will re-build node idx for each temproal node, so it should be Dict[new node idx : original node] idx!!
+        """
         # hash_table: dict[int, int] = {idx: node for idx, node in zip(*hash_dataframe)}
 
         full_feat = (full_data.node_feat, full_data.edge_feat)
@@ -295,18 +311,19 @@ def get_data_TPPR(dataset_name, snapshot: int, views: int):
             test_data = Data(full_data.sources[test_mask], full_data.destinations[test_mask], full_data.timestamps[test_mask],\
                         full_data.edge_idxs[test_mask], t_labels, hash_table = full_data.hash_table, full_feat=full_feat)
         elif idxs == lenth-1:
-            test_data = val_data
+            test_data = copy.deepcopy(val_data)
+            test_val_equal=True
         else:
             test = graph_list[idxs+1]
             test_data = to_TPPR_Data(test)
+        print(idxs, test_val_equal, full_data.sources.shape, "\n\n")
         
-        nn_val, nn_test = train_data.call_for_inductive_nodes(val_data, test_data, single_graph)
+        nn_val, nn_test = train_data.call_for_inductive_nodes(val_data, test_data, single_graph, test_val_equal)
 
         node_num = items.num_nodes
         node_edges = items.num_edges
 
         TPPR_list.append([full_data, train_data, val_data, nn_val, test_data, nn_test, node_num, node_edges])
-
 
     return TPPR_list, graph_num_node, graph_feat, edge_number
 

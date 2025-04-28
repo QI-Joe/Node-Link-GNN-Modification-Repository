@@ -1,6 +1,7 @@
 import math
 import logging
 import time
+from datetime import timedelta
 import sys
 import argparse
 import torch
@@ -12,6 +13,8 @@ from model.tgn import TGN
 from utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
 from utils.data_processing import get_data, compute_time_statistics, get_data_TGAT
 
+very_start = time.time()
+
 torch.manual_seed(0)
 np.random.seed(0)
 
@@ -21,7 +24,7 @@ parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia 
                     default='mooc')
 parser.add_argument('--bs', type=int, default=200, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
-parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
+parser.add_argument('--n_degree', type=int, default=7, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
 parser.add_argument('--n_epoch', type=int, default=50, help='Number of epochs')
 parser.add_argument('--n_layer', type=int, default=1, help='Number of network layers')
@@ -63,6 +66,10 @@ parser.add_argument('--use_source_embedding_in_message', action='store_true',
 parser.add_argument('--dyrep', action='store_true',
                     help='Whether to run the dyrep model')
 
+def quick_time_transfer(paid_time):
+  hours, remainder = divmod(paid_time, 3600)
+  minutes, seconds = divmod(remainder, 60)
+  return hours, minutes, seconds
 
 try:
   args = parser.parse_args()
@@ -87,7 +94,7 @@ MESSAGE_DIM = args.message_dim
 MEMORY_DIM = args.memory_dim
 SNAPSHOT = args.snapshot
 VIEW = args.view
-epoch_tester = 1
+epoch_tester = 3
 
 ### Extract data for training, validation and testing
 temporaloader, full_graph_nodes, full_graph_feat, full_edge_number = get_data_TGAT(DATA,snapshot=SNAPSHOT, views=SNAPSHOT-2)
@@ -100,6 +107,7 @@ rpresent.get_dataset(DATA)
 rscore.set_up_logger(name="time_logger")
 rpresent.set_up_logger()
 rpresent.record_start()
+logger = rpresent.score_log_handler
 
 def compute_value(x, threshold):
   lists = list()
@@ -109,6 +117,7 @@ def compute_value(x, threshold):
   return lists
 
 for i in range(VIEW):
+  epoch_very_start = time.time()
   full_data, train_data, val_data, nn_val, test_data, nn_test, n_nodes, n_edges = temporaloader[i]
   # Initialize training neighbor finder to retrieve temporal graph
   train_ngh_finder = get_neighbor_finder(train_data, args.uniform)
@@ -167,6 +176,13 @@ for i in range(VIEW):
   if tgn.embedding_module.node_features_backup != None:
     print(f"checking the intern node back memory {tgn.embedding_module.node_features_backup.shape}")
   print("\n\n")
+  
+  logger.info(f"\n\nthe max node idx is {max(full_data.sources.max(), full_data.destinations.max())} at snapshot {i}")
+  logger.info(f"max node idx of val data {val_data.node_feat.shape} and max node idx of test data {test_data.node_feat.shape}")
+  logger.info(f"checking the intern node memory {tgn.embedding_module.node_features.shape}")
+  if tgn.embedding_module.node_features_backup != None:
+    logger.info(f"checking the intern node back memory {tgn.embedding_module.node_features_backup.shape}")
+  logger.info("\n\n")
 
   num_instance = len(train_data.sources)
   num_batch = math.ceil(num_instance / BATCH_SIZE)
@@ -252,7 +268,7 @@ for i in range(VIEW):
       # validation on unseen nodes
       train_memory_backup = tgn.memory.backup_memory()
 
-    val_ap, val_auc = eval_edge_prediction(model=tgn,
+    val_ap, val_auc, val_acc, val_f1 = eval_edge_prediction(model=tgn,
                                           negative_edge_sampler=val_rand_sampler,
                                           data=val_data,
                                           n_neighbors=NUM_NEIGHBORS)
@@ -264,8 +280,8 @@ for i in range(VIEW):
       tgn.memory.restore_memory(train_memory_backup)
 
     # Validate on unseen nodes
-    nn_val_ap, nn_val_auc = eval_edge_prediction(model=tgn,
-                                                  negative_edge_sampler=val_rand_sampler,
+    nn_val_ap, nn_val_auc, nn_val_acc, nn_val_f1 = eval_edge_prediction(model=tgn,
+                                                  negative_edge_sampler=nn_val_rand_sampler,
                                                   data=nn_val,
                                                   n_neighbors=NUM_NEIGHBORS)
 
@@ -286,6 +302,11 @@ for i in range(VIEW):
     print('val auc: {}, new node val auc: {}'.format(val_auc, nn_val_auc))
     print('val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
 
+    logger.info('epoch: {} took {:.2f}s'.format(epoch, total_epoch_time))
+    logger.info('Epoch mean loss: {}'.format(np.mean(m_loss)))
+    logger.info('val auc: {}, new node val auc: {}'.format(val_auc, nn_val_auc))
+    logger.info('val ap: {}, new node val ap: {}'.format(val_ap, nn_val_ap))
+
     # Early stopping
     if early_stopper.early_stop_check(val_ap):
       print('No improvement over {} epochs, stop training'.format(early_stopper.max_round))
@@ -296,36 +317,67 @@ for i in range(VIEW):
       tgn.eval()
       break
 
-  tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
-  # Training has finished, we have loaded the best model, and we want to backup its current
-  # memory (which has seen validation edges) so that it can also be used when testing on unseen
-  # nodes
-  if USE_MEMORY:
-    val_memory_backup = tgn.memory.backup_memory()
+    tgn.update4test(test_ngh_finder, test_data.node_feat, test_data.edge_feat)
+    # Training has finished, we have loaded the best model, and we want to backup its current
+    # memory (which has seen validation edges) so that it can also be used when testing on unseen
+    # nodes
+    if USE_MEMORY:
+      val_memory_backup = tgn.memory.backup_memory()
 
-  ### Test
-  tgn.embedding_module.neighbor_finder = full_ngh_finder
-  test_ap, test_auc = eval_edge_prediction(model=tgn,
-                                          negative_edge_sampler=test_rand_sampler,
-                                          data=test_data,
-                                          n_neighbors=NUM_NEIGHBORS)
+    ### Test
+    test_ap, test_auc, test_acc, test_f1 = eval_edge_prediction(model=tgn,
+                                            negative_edge_sampler=test_rand_sampler,
+                                            data=test_data,
+                                            n_neighbors=NUM_NEIGHBORS)
 
-  if USE_MEMORY:
-    tgn.memory.restore_memory(val_memory_backup)
+    if USE_MEMORY:
+      tgn.memory.restore_memory(val_memory_backup)
 
-  # Test on unseen nodes
-  nn_test_ap, nn_test_auc = eval_edge_prediction(model=tgn,
-                                                negative_edge_sampler=nn_test_rand_sampler,
-                                                data=nn_test,
-                                                n_neighbors=NUM_NEIGHBORS)
+    # Test on unseen nodes
+    nn_test_ap, nn_test_auc, nn_test_acc, nn_test_f1 = eval_edge_prediction(model=tgn,
+                                                  negative_edge_sampler=nn_test_rand_sampler,
+                                                  data=nn_test,
+                                                  n_neighbors=NUM_NEIGHBORS)
 
-  print('Test statistics: Old nodes -- auc: {}, ap: {}'.format(test_auc, test_ap))
-  print('Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
-  # Save results for this run
+    print('Test statistics: Old nodes -- auc: {}, ap: {}'.format(test_auc, test_ap))
+    print('Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
+    
+    logger.info('Test statistics: Old nodes -- auc: {}, ap: {}'.format(test_auc, test_ap))
+    logger.info('Test statistics: New nodes -- auc: {}, ap: {}'.format(nn_test_auc, nn_test_ap))
+    # Save results for this run
 
-  if USE_MEMORY:
-    # Restore memory at the end of validation (save a model which is ready for testing)
-    tgn.memory.restore_memory(val_memory_backup)
-  
-  tgn.restore_test_emb()
-  tgn.embedding_module.backup_release()
+    if USE_MEMORY:
+      # Restore memory at the end of validation (save a model which is ready for testing)
+      tgn.memory.restore_memory(val_memory_backup)
+    
+    tgn.restore_test_emb()
+    tgn.embedding_module.backup_release()
+    
+    validation_dict = {
+        "val_acc": val_acc,
+        "val_f1": val_f1,
+        "test_acc": test_acc,
+        "precision": test_ap,  # Assuming test_ap is used as precision
+        "test_roc_auc": test_auc,    # Assuming test_auc is used as recall
+        "f1": test_f1,   # Assuming test_new_new_ap is used as F1
+        "test_new_old_acc": nn_test_acc,
+        "test_new_old_ap": nn_test_ap,
+        "test_new_old_f1": nn_test_f1,
+        "test_new_old_auc": nn_test_auc
+        }
+    score_recorder.append(validation_dict)
+    
+    epoch_very_end = time.time() - epoch_very_start
+    eh, em, es = quick_time_transfer(epoch_very_end)
+    logger.info(f"Time costed is {eh} hours-{em} minutes-{es} seconds")
+    
+    rpresent.score_record(temporal_score_=score_recorder, node_size=max(full_data.sources.max(), full_data.destinations.max()), temporal_idx=i, epoch_interval=epoch_tester, mode='i')
+    snapshot_list.append(score_recorder)
+
+rpresent.record_end()
+rscore.record_end()
+rscore.fast_processing('i', snapshot_list)
+
+very_end = time.time() - very_start
+h, m, s = quick_time_transfer(epoch_very_end)
+logger.info(f"Time costed is {h} hours-{m} minutes-{s} seconds")

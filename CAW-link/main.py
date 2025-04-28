@@ -48,7 +48,8 @@ idx_list = Temporal_Splitting(graph=graph).temporal_splitting(time_mode="view", 
 temporaloader = Dynamic_Dataloader(idx_list, graph)
 snapshot_list = list()
 
-node_dim, edge_dim = graph.pos[0].shape[1], graph.pos[1].shape[1]
+edge_dim = graph.pos[1].shape[1]
+time_dim = node_dim = graph.pos[0].shape[1]
 
 rscore.get_dataset(DATA)
 rpresent.get_dataset(DATA)
@@ -57,6 +58,12 @@ rpresent.set_up_logger()
 rpresent.record_start()
 
 num_cls = graph.y.max()+1
+
+cawn = CAWN(agg=AGG, node_dim=node_dim, edge_dim=edge_dim,
+            num_layers=NUM_LAYER, use_time=USE_TIME, attn_agg_method=ATTN_AGG_METHOD, attn_mode=ATTN_MODE,
+            n_head=ATTN_NUM_HEADS, drop_out=DROP_OUT, pos_dim=POS_DIM, pos_enc=POS_ENC, num_classes = num_cls,
+            num_neighbors=NUM_NEIGHBORS, walk_n_head=WALK_N_HEAD, walk_mutual=WALK_MUTUAL, walk_linear_out=args.walk_linear_out, walk_pool=args.walk_pool,
+            cpu_cores=CPU_CORES, verbosity=VERBOSITY, get_checkpoint_path=None)
 
 for sp in range(VIEW):
     temporalgraph = temporaloader.get_temporal()
@@ -78,6 +85,7 @@ for sp in range(VIEW):
     # split and pack the data by generating valid train/val/test mask according to the "mode"
     val_time = int(temporalgraph.edge_attr.shape[0]*0.85)
 
+    t1_new_new_mask = None
     if args.mode == 't':
         print('Transductive training...')
         valid_train_flag = e_idx_l<val_time
@@ -167,11 +175,7 @@ for sp in range(VIEW):
 
     # model initialization
     device = torch.device('cuda:{}'.format(GPU))
-    cawn = CAWN(agg=AGG, node_dim=node_dim, edge_dim=edge_dim,
-                num_layers=NUM_LAYER, use_time=USE_TIME, attn_agg_method=ATTN_AGG_METHOD, attn_mode=ATTN_MODE,
-                n_head=ATTN_NUM_HEADS, drop_out=DROP_OUT, pos_dim=POS_DIM, pos_enc=POS_ENC, num_classes = num_cls,
-                num_neighbors=NUM_NEIGHBORS, walk_n_head=WALK_N_HEAD, walk_mutual=WALK_MUTUAL, walk_linear_out=args.walk_linear_out, walk_pool=args.walk_pool,
-                cpu_cores=CPU_CORES, verbosity=VERBOSITY, get_checkpoint_path=None)
+
     
     cawn.temproal_update(ngh_finder=full_ngh_finder, n_feat=n_feat, e_feat=e_feat)
     cawn.to(device)
