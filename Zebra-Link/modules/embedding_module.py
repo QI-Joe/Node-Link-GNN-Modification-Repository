@@ -40,7 +40,7 @@ class EmbeddingModule(nn.Module):
     
   def test_updater(self, ngh_finder, edge_features):
     self.neighbor_finder = ngh_finder
-    self.edge_features = edge_features
+    # self.edge_features = edge_features
 
   def restore_test_emb(self):
     self.edge_features = self.edge_feature_backup
@@ -144,12 +144,23 @@ class GraphDiffusionEmbedding(GraphEmbedding):
   def streaming_topk_no_fake(self,source_nodes, timestamps, edge_idxs):
     return self.tppr_finder.streaming_topk_no_fake(source_nodes,timestamps,edge_idxs)
 
+  def train_fill_tppr(self, src, dst, tsp, eid, filled):
+    if filled:
+      self.tppr_finder.train_val_restore()
+    else:
+      self.tppr_finder.compute_fundmental(src, dst, tsp, eid, "val")
+      
+  def test_fill_tppr(self, src, dst, tsp, eid, filled):
+    if filled:
+      self.tppr_finder.test_train_restore()
+    else:
+      self.tppr_finder.compute_fundmental(src, dst, tsp, eid, "test")
 
   def fill_tppr(self,sources, targets, timestamps, edge_idxs, tppr_filled):
     if tppr_filled:
       self.tppr_finder.restore_val_tppr()
     else:
-      self.tppr_finder.compute_val_tppr(sources, targets,timestamps, edge_idxs)
+      self.tppr_finder.compute_val_tppr(sources, targets, timestamps, edge_idxs)
 
   '''
   def check_tppr_errors(self,sources, targets, timestamps, edge_idxs,last):

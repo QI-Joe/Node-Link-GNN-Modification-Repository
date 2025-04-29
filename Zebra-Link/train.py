@@ -10,7 +10,7 @@ from pathlib import Path
 from evaluation.evaluation import eval_edge_prediction, eval_node_classification, LogRegression
 from model.tgn_model import TGN
 from utils.util import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
-from utils.data_processing import get_data_TPPR
+from utils.data_processing import get_data_TPPR, test_tranucate
 from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score
 from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning, NumbaTypeSafetyWarning
 from utils.my_dataloader import to_cuda, Temporal_Splitting, Temporal_Dataloader, data_load
@@ -111,6 +111,7 @@ tgn = TGN(edge_features=global_edge_feats, device=device, # neighbor_finder=trai
             use_destination_embedding_in_message=args.use_destination_embedding_in_message,
             use_source_embedding_in_message=args.use_source_embedding_in_message,
             args=args)
+tgn.update4node_num(args.n_nodes, device)
 
 snapshot_list = list()
 rscore, rpresent = TimeRecord(model_name="TGAT"), TimeRecord(model_name="TGAT")
@@ -124,7 +125,7 @@ logger = rpresent.score_log_handler
 for i in range(len(round_list)):
   temporal_very_start = time.time()
   full_data, train_data, val_data, nn_val, test_data, nn_test, n_nodes, n_edges = round_list[i]
-  args.n_nodes = n_nodes +1
+  # args.n_nodes = n_nodes +1
   args.n_edges = n_edges +1
 
   edge_feats = full_data.edge_feat
@@ -163,7 +164,6 @@ for i in range(len(round_list)):
   #           use_destination_embedding_in_message=args.use_destination_embedding_in_message,
   #           use_source_embedding_in_message=args.use_source_embedding_in_message,
   #           args=args)
-  tgn.update4node_num(args.n_nodes, device)
   tgn.update4temporal_graph(train_ngh_finder, edge_feats)
   criterion = torch.nn.BCELoss()
   optimizer = torch.optim.Adam(tgn.parameters(), lr=LEARNING_RATE)
@@ -176,7 +176,7 @@ for i in range(len(round_list)):
   stop_epoch=-1
 
   train_tppr_time=[]
-  tppr_filled = False
+  train_tppr_filled = False
   test_tppr_filled=False
   train_tppr_backup, val_tppr_backup = None, None
   score_recorder = list()
@@ -254,12 +254,13 @@ for i in range(len(round_list)):
     # change the tppr finder to validation and test
     if args.tppr_strategy=='streaming':
       tgn.embedding_module.reset_tppr()
-      tgn.embedding_module.fill_tppr(train_data.sources, train_data.destinations, train_data.timestamps, train_data.edge_idxs, tppr_filled)
-      tppr_filled = True
+      tgn.embedding_module.train_fill_tppr(train_data.sources, train_data.destinations, train_data.timestamps, train_data.edge_idxs, train_tppr_filled)
+      train_tppr_filled = True
     tgn.set_neighbor_finder(full_ngh_finder)
 
     ########################  Model Validation on the Val Dataset #######################
     t_epoch_val_start=time.time()
+    print("start **Validation** transductive/inductive testing")
     ### transductive val
     train_memory_backup = tgn.memory.backup_memory()
     if args.tppr_strategy=='streaming':
@@ -267,10 +268,6 @@ for i in range(len(round_list)):
 
     val_ap, val_auc, val_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=val_rand_sampler, data=val_data, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
     
-    ### transductive test backup of validation process
-    val_memory_backup = tgn.memory.backup_memory()
-    if args.tppr_strategy=='streaming':
-      val_tppr_backup = tgn.embedding_module.backup_tppr()
     
     tgn.memory.restore_memory(train_memory_backup)
     if args.tppr_strategy=='streaming':
@@ -279,9 +276,6 @@ for i in range(len(round_list)):
     ### inductive val
     nn_val_ap, nn_val_auc, nn_val_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=nn_val_rand_sampler, data=nn_val, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
     
-    tgn.memory.restore_memory(val_memory_backup)
-    if args.tppr_strategy=='streaming':
-      tgn.embedding_module.restore_tppr(val_tppr_backup)
 
     epoch_val_time = time.time() - t_epoch_val_start
     t_total_epoch_val += epoch_val_time
@@ -308,25 +302,38 @@ for i in range(len(round_list)):
     ######################  Evaludate Model on the Test Dataset #######################
     t_test_start=time.time()
 
+    print("start **Test** transductive/inductive testing")
+
     test_n_nodes = test_data.node_feat.shape[0] + 1
     tgn.update4test(test_ngh_finder, test_n_nodes, test_data.edge_feat)
     
     if args.tppr_strategy=='streaming':
       """
       TODO: Truncate the test_data based on length of full_data to (seen data / unseen T-T+1 moment), and provide cache memory or not
+      TODO-2: cache the 'train set' of test_data and memory
+      t_t1_interval_Data: trancuate the test_data based on length of train_data to avoid depulication of train-test data
       """
-      tgn.embedding_module.reset_tppr()
-      tgn.embedding_module.fill_tppr(train_data.sources, train_data.destinations, train_data.timestamps, train_data.edge_idxs, tppr_filled)
-      tppr_filled = True
+      tgn.embedding_module.reset_tppr() # in global view mode, reset_tppr here is not necessary
+      (tsrc, tdst, ttsp, teid), t_t1_interval_Data = test_tranucate(train_data.sources.shape[0], test_data)
+      tgn.embedding_module.test_fill_tppr(tsrc, tdst, ttsp, teid, test_tppr_filled)
+      test_tppr_filled = True
+    
+    test_train_memory_backup = tgn.memory.backup_memory()
+    if args.tppr_strategy=='streaming':
+      test_train_tppr_backup = tgn.embedding_module.backup_tppr()
     
     test_ap, test_auc, test_acc = eval_edge_prediction(model=tgn, negative_edge_sampler=test_rand_sampler, \
-                                data=test_data, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
+                                data=t_t1_interval_Data, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
+
+    tgn.memory.restore_memory(test_train_memory_backup)
+    if args.tppr_strategy=='streaming':
+      tgn.embedding_module.restore_tppr(test_train_tppr_backup)
 
     ### inductive test
     nn_test_ap, nn_test_auc, nn_test_acc = eval_edge_prediction(model=tgn, negative_edge_sampler= nn_test_rand_sampler, data=nn_test, n_neighbors=NUM_NEIGHBORS, batch_size=BATCH_SIZE)
     t_test=time.time()-t_test_start
 
-    train_tppr_time=np.array(train_tppr_time)[1:]
+    train_tppr_time=train_tppr_time[1:]
     NUM_EPOCH=stop_epoch if stop_epoch!=-1 else NUM_EPOCH
     print(f'### num_epoch {NUM_EPOCH}, epoch_train {t_total_epoch_train/NUM_EPOCH}, epoch_val {t_total_epoch_val/NUM_EPOCH}, epoch_test {t_test}, train_tppr {np.mean(train_tppr_time)}')
     

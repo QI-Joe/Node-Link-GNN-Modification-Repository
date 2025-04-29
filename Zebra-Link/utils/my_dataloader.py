@@ -461,7 +461,7 @@ class Temporal_Splitting(object):
             subpos = (nodepos[self.n_id.sample_idx(sampled_nodes)], edgepos[sample_time])
 
             temporal_subgraph = Temporal_Dataloader(nodes=sampled_nodes, edge_index=sampled_edges, \
-                edge_attr=edge_attr[sample_time], y=y, pos=subpos).get_Temporalgraph()
+                edge_attr=edge_attr[sample_time], y=y, pos=subpos) #.get_Temporalgraph()
             
             temporal_subgraphs.append(temporal_subgraph)
 

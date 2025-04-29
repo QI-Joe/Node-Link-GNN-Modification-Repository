@@ -97,7 +97,7 @@ class Data:
       expected_test = list(test_node - (train_test_share | common_share | val_test_share))
       new_test = test_data.inductive_back_propogation(expected_test, single_graph = single_graph)
     else:
-      t_times_common_data = list(train_test_share | common_share | val_test_share)
+      t_times_common_data = list(validation_node | train_node)
       t_times_hash_table = val_data.hash_table
       new_test = test_data.inductive_back_propogation(t_times_common_data, single_graph, t_times_hash_table)
 
@@ -318,7 +318,7 @@ def get_data_TPPR(dataset_name, snapshot: int, views: int):
             test_data = to_TPPR_Data(test)
         print(idxs, test_val_equal, full_data.sources.shape, "\n\n")
         
-        nn_val, nn_test = train_data.call_for_inductive_nodes(val_data, test_data, single_graph, test_val_equal)
+        nn_val, nn_test = train_data.call_for_inductive_nodes(val_data, test_data, True, test_val_equal)
 
         node_num = items.num_nodes
         node_edges = items.num_edges
@@ -415,6 +415,18 @@ def batch_processor(data_label: dict[dict[int, np.ndarray]], data: Data)->list[t
     batch_list.append((backprop_mask, values, time_mask))
   return batch_list
 
+
+def test_tranucate(train_length, test_data: Data):
+  """
+  :return partial of sources, destinations and timestamps of test_data \n
+  where cut-offed by train_edge_length
+  :from author -- this tranucate really indicating that Zebra is perfectly fit for global view of graph, it is very necessary
+  to maintain a global tppr dictionary for efficiency in Zebra
+  """
+  src, dst, tsp, eid = test_data.sources, test_data.destinations, test_data.timestamps, test_data.edge_idxs
+  tppr_tranucate_before = copy.deepcopy((src[:train_length], dst[:train_length], tsp[:train_length], eid[:train_length]))
+  tppr_tranucate_after_data_object = Data(src[train_length:], dst[train_length:], tsp[train_length:], eid[train_length:], labels=test_data.labels, hash_table=test_data.hash_table, full_feat=(test_data.node_feat, test_data.edge_feat))
+  return tppr_tranucate_before, tppr_tranucate_after_data_object
 
 # path = "data/mooc/ml_mooc.npy"
 # edge = np.load(path)

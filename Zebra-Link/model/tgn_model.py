@@ -240,25 +240,29 @@ class TGN(torch.nn.Module):
     self.embedding_module.neighbor_finder = neighbor_finder
 
   def update4temporal_graph(self, ngh_finder, edge_features: np.ndarray) -> None:
+    """
+    under global view, edge_raw feature not need to update considering first input will already be edge_index
+    :Attention!! Now in self.embedding_module.test_updater, edge_features will not be affected..!
+    """
     self.neighbor_finder = ngh_finder
     edge_raw_feature = torch.from_numpy(edge_features.astype(np.float64)).to(self.device)
     self.embedding_module.test_updater(ngh_finder=ngh_finder, edge_features=edge_raw_feature)
 
   def train_val_backup(self):
     self.embedding_module.train_val_backup()
-    self.memory_backup = self.memory
+    self.memory_backup = self.memory.memory.clone()
 
   def update4test(self, ngh_finder, test_n_nodes: int, edge_features: np.ndarray) -> None:
     self.neighbor_finder = ngh_finder
     self.train_val_backup()
     edge_raw_feature = torch.from_numpy(edge_features.astype(np.float64)).to(self.device)
     self.embedding_module.test_updater(ngh_finder=ngh_finder, edge_features=edge_raw_feature)
-    self.memory = Memory(n_nodes=test_n_nodes, memory_dimension=self.memory_dimension,
-                        input_dimension= self.message_dimension,
-                        message_dimension = self.message_dimension,
-                        device = self.device)
-    self.embedding_module.update_memory(self.memory)
+    # self.memory = Memory(n_nodes=test_n_nodes, memory_dimension=self.memory_dimension,
+    #                     input_dimension= self.message_dimension,
+    #                     message_dimension = self.message_dimension,
+    #                     device = self.device)
+    # self.embedding_module.update_memory(self.memory)
   
   def restore_test_emb(self):
-    self.memory = self.memory_backup
+    self.memory.memory = self.memory_backup
     self.embedding_module.restore_test_emb()

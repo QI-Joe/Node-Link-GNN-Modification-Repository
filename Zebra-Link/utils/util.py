@@ -384,6 +384,9 @@ spec_tppr_finder = [
     ('PPR_list', nb.typeof(list_list_dict)),
     ('val_norm_list', types.ListType(types.Array(types.float64, 1, 'C'))),
     ('val_PPR_list', nb.typeof(list_list_dict)),
+    ('test_norm_list', types.ListType(types.Array(types.float64, 1, 'C'))),
+    ('test_PPR_list', nb.typeof(list_list_dict)),
+    ('mode', types.string)
 ]
 
 
@@ -398,6 +401,7 @@ class tppr_finder:
     self.beta_list=beta_list
     self.reset_val_tppr()
     self.reset_tppr()
+    self.reset_test_tppr()
 
   def reset_val_tppr(self):
     norm_list=typed.List()
@@ -433,6 +437,23 @@ class tppr_finder:
     self.norm_list=norm_list
     self.PPR_list=PPR_list
 
+  def reset_test_tppr(self):
+    norm_list=typed.List()
+    PPR_list=typed.List()
+    for _ in range(self.n_tppr):
+      temp_PPR_list=typed.List()
+      for _ in range(self.num_nodes):
+        tppr_dict = nb.typed.Dict.empty(
+          key_type=nb_key_type,
+          value_type=types.float64,
+        )
+        temp_PPR_list.append(tppr_dict)
+      norm_list.append(np.zeros(self.num_nodes,dtype=np.float64))
+      PPR_list.append(temp_PPR_list)
+
+    self.test_norm_list=norm_list
+    self.test_PPR_list=PPR_list
+
   def backup_tppr(self):
     return self.norm_list.copy(),self.PPR_list.copy()
 
@@ -443,6 +464,13 @@ class tppr_finder:
     self.norm_list = self.val_norm_list.copy()
     self.PPR_list = self.val_PPR_list.copy()
 
+  def train_val_restore(self):
+    self.norm_list = self.val_norm_list.copy()
+    self.PPR_list = self.val_PPR_list.copy()
+    
+  def test_train_restore(self):
+    self.norm_list = self.test_norm_list.copy()
+    self.PPR_list = self.test_PPR_list.copy()
 
   def extract_streaming_tppr(self,tppr,current_timestamp,k,node_list,edge_idxs_list,delta_time_list,weight_list,position):
 
@@ -781,8 +809,100 @@ class tppr_finder:
           norm_list[source]=norm_list[source]*beta+beta
     return batch_node_list,batch_edge_idxs_list,batch_delta_time_list,batch_weight_list
 
+  # one pass of the data to fill T-PPR values
+  def compute_fundmental(self,sources, targets, timestamps, edge_idxs, mode:str):
 
+    n_edges=len(sources)
+    ###########  enumerate tppr models ###########
+    for index0,alpha in enumerate(self.alpha_list):
+      beta=self.beta_list[index0]
+      norm_list=self.norm_list[index0] # should be a pointer, norm_list changed, self.norm_list[index0] also changed
+      PPR_list=self.PPR_list[index0]
 
+      ###########  enumerate edge interactions ###########
+      for i in range(n_edges):
+        source=sources[i]
+        target=targets[i]
+        timestamp=timestamps[i]
+        edge_idx=edge_idxs[i]
+        pairs=[(source,target),(target,source)] if source!=target else [(source,target)]
+
+        #############  update the PPR values here #############
+        for index,pair in enumerate(pairs):
+          s1=pair[0]
+          s2=pair[1]
+
+          ################# s1 side #################
+          if norm_list[s1]==0:
+            t_s1_PPR = nb.typed.Dict.empty(
+              key_type=nb_key_type,
+              value_type=types.float64,
+            )
+            scale_s2=1-alpha
+          else:
+            t_s1_PPR = PPR_list[s1].copy()
+            last_norm= norm_list[s1]
+            new_norm=last_norm*beta+beta
+            scale_s1=last_norm/new_norm*beta
+            scale_s2=beta/new_norm*(1-alpha)
+            for key, value in t_s1_PPR.items():
+              t_s1_PPR[key]=value*scale_s1     
+
+          ################# s2 side #################
+          if norm_list[s2]==0:
+            t_s1_PPR[(edge_idx,s2,timestamp)]=scale_s2*alpha if alpha!=0 else scale_s2
+          else:
+            s2_PPR = PPR_list[s2]
+            for key, value in s2_PPR.items():
+              if key in t_s1_PPR:
+                t_s1_PPR[key]+=value*scale_s2
+              else:
+                t_s1_PPR[key]=value*scale_s2
+            
+            new_key = (edge_idx,s2,timestamp)
+            t_s1_PPR[new_key]=scale_s2*alpha if alpha!=0 else scale_s2
+
+          ####### exract the top-k items ########
+          updated_tppr=nb.typed.Dict.empty(
+            key_type=nb_key_type,
+            value_type=types.float64
+          )
+
+          tppr_size=len(t_s1_PPR)
+          if tppr_size<=self.k:
+            updated_tppr=t_s1_PPR
+          else:
+            keys = list(t_s1_PPR.keys())
+            values = np.array(list(t_s1_PPR.values()))
+            inds = np.argsort(values)[-self.k:]
+            for ind in inds:
+              key=keys[ind]
+              value=values[ind]
+              updated_tppr[key]=value
+
+          if index==0:
+            new_s1_PPR=updated_tppr
+          else:
+            new_s2_PPR=updated_tppr
+
+        ####### update PPR_list and norm_list #######
+        if source!=target:
+          PPR_list[source]=new_s1_PPR
+          PPR_list[target]=new_s2_PPR
+          norm_list[source]=norm_list[source]*beta+beta
+          norm_list[target]=norm_list[target]*beta+beta
+        else:
+          PPR_list[source]=new_s1_PPR
+          norm_list[source]=norm_list[source]*beta+beta
+
+    if mode == "val":
+      self.val_norm_list = self.norm_list.copy()
+      self.val_PPR_list = self.PPR_list.copy()
+    elif mode == "test":
+      self.test_norm_list = self.norm_list.copy()
+      self.test_PPR_list = self.PPR_list.copy()
+
+"""
   # one pass of the data to fill T-PPR values
   def compute_val_tppr(self,sources, targets, timestamps, edge_idxs):
 
@@ -871,4 +991,4 @@ class tppr_finder:
 
     self.val_norm_list = self.norm_list.copy()
     self.val_PPR_list = self.PPR_list.copy()
-
+"""
