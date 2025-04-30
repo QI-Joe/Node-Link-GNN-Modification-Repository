@@ -16,19 +16,16 @@ import sys
 from collections import defaultdict
 import os
 import gpustat
-from itertools import chain
-from tqdm import tqdm, trange, tqdm_notebook, tnrange
-import csv
-import json
+from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, accuracy_score
 
 PATH = "./"
 
-try:
-    # get_ipython
-    trange = tnrange
-    tqdm = tqdm_notebook
-except NameError:
-    pass
+# try:
+#     # get_ipython
+#     trange = tnrange
+#     tqdm = tqdm_notebook
+# except NameError:
+#     pass
 
 total_reinitialization_count = 0
 
@@ -43,16 +40,16 @@ class NormalLinear(nn.Linear):
 
 # THE JODIE MODULE
 class JODIE(nn.Module):
-    def __init__(self, args, num_features, num_users, num_items):
+    def __init__(self, args, num_features):
         super(JODIE,self).__init__()
 
         print("*** Initializing the JODIE model ***")
         self.modelname = args.model
         self.embedding_dim = args.embedding_dim
-        self.num_users = num_users
-        self.num_items = num_items
-        self.user_static_embedding_size = num_users
-        self.item_static_embedding_size = num_items
+        # self.num_users = num_users
+        # self.num_items = num_items
+        # self.user_static_embedding_size = num_users
+        # self.item_static_embedding_size = num_items
 
         print("Initializing user and item embeddings")
         self.initial_user_embedding = nn.Parameter(torch.Tensor(args.embedding_dim))
@@ -67,9 +64,18 @@ class JODIE(nn.Module):
         print("Initializing linear layers")
         self.linear_layer1 = nn.Linear(self.embedding_dim, 50)
         self.linear_layer2 = nn.Linear(50, 2)
-        self.prediction_layer = nn.Linear(self.user_static_embedding_size + self.item_static_embedding_size + self.embedding_dim * 2, self.item_static_embedding_size + self.embedding_dim)
+        # self.prediction_layer = nn.Linear(self.user_static_embedding_size + self.item_static_embedding_size + self.embedding_dim * 2, self.item_static_embedding_size + self.embedding_dim)
         self.embedding_layer = NormalLinear(1, self.embedding_dim)
         print("*** JODIE initialization complete ***\n\n")
+        
+    def reset_prediction(self, num_src: int, num_dest: int):
+        """
+        TODO: Remember to list why this function is needed
+        """
+        self.num_users, self.num_items = num_src, num_dest
+        self.user_static_embedding_size = num_src
+        self.item_static_embedding_size = num_dest
+        self.prediction_layer = nn.Linear(self.user_static_embedding_size + self.item_static_embedding_size + self.embedding_dim * 2, self.item_static_embedding_size + self.embedding_dim)
         
     def forward(self, user_embeddings, item_embeddings, timediffs=None, features=None, select=None):
         if select == 'item_update':
@@ -100,6 +106,97 @@ class JODIE(nn.Module):
         X_out = self.prediction_layer(user_embeddings)
         return X_out
 
+class MergeLayer(torch.nn.Module):
+    def __init__(self, dim1, dim2, dim3, dim4):
+        super().__init__()
+        #self.layer_norm = torch.nn.LayerNorm(dim1 + dim2)
+        self.fc1 = torch.nn.Linear(dim1 + dim2, dim3)
+        self.fc2 = torch.nn.Linear(dim3, dim4)
+        self.act = torch.nn.ReLU()
+
+        torch.nn.init.xavier_normal_(self.fc1.weight)
+        torch.nn.init.xavier_normal_(self.fc2.weight)
+        
+    def forward(self, x1, x2):
+        x = torch.cat([x1, x2], dim=1)
+        #x = self.layer_norm(x)
+        h = self.act(self.fc1(x))
+        return self.fc2(h)
+
+class RandEdgeSampler(object):
+    def __init__(self, src_list, dst_list):
+        self.src_list = np.unique(src_list)
+        self.dst_list = np.unique(dst_list)
+
+    def sample(self, size):
+        src_index = np.random.randint(0, len(self.src_list), size)
+        dst_index = np.random.randint(0, len(self.dst_list), size)
+        return self.src_list[src_index], self.dst_list[dst_index]
+
+def eval_one_epoch(dataset: dict[np.ndarray], model: JODIE, sampler: RandEdgeSampler, \
+    device, user_emb, item_emb):
+    """
+    """
+    BATCH = 200
+    # prob_socre_list, prob_label_list = [], []
+    val_acc, val_ap, val_f1, val_auc = [], [], [], []
+    full_length = dataset["user_sequence_id"].shape[0]
+    for j in range(BATCH, full_length, BATCH):
+        batch_end = min(j, full_length)
+        batch_idx = np.arange(j - BATCH, batch_end)
+        size = batch_idx.shape[0]
+        
+        userid = dataset["user_sequence_id"][batch_idx]
+        itemid = dataset["item_sequence_id"][batch_idx]
+        feature = dataset["feature_sequence"][batch_idx]
+        user_timediff = dataset["user_timediffs_sequence"][batch_idx]
+        item_timediff = dataset["item_timediffs_sequence"][batch_idx]
+        # y_true = dataset["y_true"][j]
+        # itemid_previous = dataset["user_previous_itemid_seq"][j]
+
+        src_fake, dst_fake = sampler.sample(size)
+        tbatch_userids_fake = torch.LongTensor(src_fake).to(device)
+        tbatch_itemids_fake = torch.LongTensor(dst_fake).to(device)
+        fake_user_embedding_input = user_emb[tbatch_userids_fake, :]
+        fake_item_embedding_input = item_emb[tbatch_itemids_fake, :]
+
+        tbatch_userids = torch.LongTensor(userid).to(device)
+        tbatch_itemids = torch.LongTensor(itemid).to(device)
+        user_embedding_input = user_emb[tbatch_userids, :]
+        item_embedding_input = item_emb[tbatch_itemids, :]
+        
+        feature_tensor = torch.Tensor(feature).unsqueeze(0).to(device)
+        user_timediffs_tensor = torch.Tensor(user_timediff).unsqueeze(1).to(device)
+        item_timediffs_tensor = torch.Tensor(item_timediff).unsqueeze(1).to(device)
+        # itemid_embedding_previous = item_emb[torch.LongTensor([itemid_previous])]
+        
+        with torch.no_grad():
+            user_embedding_output = model.forward(user_embedding_input, item_embedding_input, timediffs=user_timediffs_tensor, features=feature_tensor, select='project') 
+            fake_user_embeding_output = model.forward(fake_user_embedding_input, fake_item_embedding_input, timediffs=user_timediffs_tensor, features=feature_tensor, select='project') 
+            # item_embedding_output = model.forward(user_embedding_input, item_embedding_input, timediffs=item_timediffs_tensor, features=feature_tensor, select='item_update') 
+
+        # item_emb[itemid,:] = item_embedding_output.squeeze(0) 
+        # user_emb[userid,:] = user_embedding_output.squeeze(0) 
+
+        # eventually = torch.concat([user_embedding_output, fake_user_embeding_output], dim=0)
+        eventually = user_embedding_output
+        with torch.no_grad():
+            prob = model.predict_label(eventually)
+        prob_score = prob.cpu().numpy().sum(axis=1)
+        pred_label = prob.argmax(dim=1).cpu().numpy()
+        
+        true_label = dataset["y_true"][batch_idx]
+        # true_label = np.concatenate([np.ones(size), np.zeros(size)])
+        # prob_socre_list.append(prob_score)
+        # prob_label_list.append(pred_label)
+
+        val_acc.append(accuracy_score(true_label, pred_label))
+        val_f1.append(f1_score(true_label, pred_label, average='weighted'))
+        val_auc.append(roc_auc_score(true_label, prob_score))
+        val_ap.append(average_precision_score(true_label, prob_score))
+
+    print(f"Validation ROC AUC: {np.mean(val_auc):.4f}, Average Precision: {np.mean(val_ap):.4f}")
+    return np.mean(val_acc), np.mean(val_f1), np.mean(val_auc), np.mean(val_ap)
 
 # INITIALIZE T-BATCH VARIABLES
 def reinitialize_tbatches():

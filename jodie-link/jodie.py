@@ -18,6 +18,10 @@ from torch_geometric.transforms import RandomNodeSplit
 from evaluate_node_classification import Simple_Regression
 from torch import Tensor
 from time_evaluation import TimeRecord
+import argparse
+from library_data import split_edges_for_link_prediction
+from library_models import eval_one_epoch
+from library_models import RandEdgeSampler
 
 def get_time_diffs(graph: Temporal_Dataloader) -> Tensor:
     freq_dict, length = {}, graph.edge_index.shape[1]
@@ -39,17 +43,16 @@ recsd = TimeRecord(model_name="Jodie")
 recsd_score = TimeRecord(model_name="Jodie")
 # INITIALIZE PARAMETERS
 parser = argparse.ArgumentParser()
-parser.add_argument('--network', required=False, default="dblp", help='Name of the network/dataset')
+parser.add_argument('--network', required=False, default="mooc", help='Name of the network/dataset')
 parser.add_argument('--model', default="jodie", help='Model name to save output in file')
 parser.add_argument('--gpu', default=-1, type=int, help='ID of the gpu to run on. If set to -1 (default), the GPU with most free memory will be chosen.')
 parser.add_argument('--epochs', default=20, type=int, help='Number of epochs to train the model')
 parser.add_argument('--embedding_dim', default=64, type=int, help='Number of dimensions of the dynamic embedding')
 parser.add_argument('--train_proportion', default=0.8, type=float, help='Fraction of interactions (from the beginning) that are used for training.The next 10% are used for validation and the next 10% for testing')
 parser.add_argument('--state_change', default=True, type=bool, help='True if training with state change of users along with interaction prediction. False otherwise. By default, set to True.')
-parser.add_argument('--snapshot', default=20, type=int, help='used for decide how many snapshots there would be')
+parser.add_argument('--snapshot', default=60, type=int, help='used for decide how many snapshots there would be')
 args = parser.parse_args()
 
-args.datapath = "data/%s.csv" % args.network
 if args.train_proportion > 0.8:
     sys.exit('Training sequence proportion cannot be greater than 0.8.')
 
@@ -67,7 +70,7 @@ The batches are then used to train JODIE.
 Longer timespans mean more interactions are processed and the training time is reduced, however it requires more GPU memory.
 Longer timespan leads to less frequent model updates. 
 '''
-epoch_interval = 10
+epoch_interval = 1
 recsd.get_dataset(args.network)
 recsd_score.get_dataset(args.network)
 recsd.set_up_logger()
@@ -79,36 +82,41 @@ graph, idxloader = data_load(dataset=args.network)
 graph_dataloader = Temporal_Splitting(graph=graph).temporal_splitting(time_mode="view", snapshot = args.snapshot, views = args.snapshot-2)
 temporaloader = Dynamic_Dataloader(data = graph_dataloader, graph=graph)
 
-num_features = graph.pos[0].shape[1]
-num_classes = graph.y.max()+1
+num_features = graph.pos[1].shape[1]
 
-model = JODIE(args, num_features, num_classes)
+model = JODIE(args, num_features)
 snapshot_list = []
 for snapshot in range(args.snapshot):
     recsd.temporal_record()
     data = temporaloader.get_temporal()
+    t1_data = temporaloader.get_T1graph(snapshot)
     num_users = data.src_num
     num_items = data.dest_num
 
     num_interactions = data.num_edges
     unique_y, y_freq = np.unique(data.y, return_counts=True)
     y_distro = [y_freq[i] / data.y.shape[0] for i in range(y_freq.shape[0])]
+    y_distro = [0.5, 0.5]
     y_distro_cuda = torch.tensor(y_distro, dtype=torch.float32).to(device)
     crossEntropyLoss = nn.CrossEntropyLoss(weight=y_distro_cuda)
     MSELoss = nn.MSELoss()
 
-    node_splitter = RandomNodeSplit(num_val=0.2, num_test=0.0)
-    data: Temporal_Dataloader = node_splitter(data=data)
-
     timespan = data.edge_attr[-1].item() - data.edge_attr[0].item()
     tbatch = timespan / 500
-    
+
+    train, valid, valid_nn, test, test_nn = split_edges_for_link_prediction(data, t1_data)
+
     all_node = data.num_nodes
     model.reset_prediction(all_node, all_node)
     model = model.to(device)
 
-    user_embeddings = data.node_pos.to(device)
-    item_embeddings = data.node_pos.to(device)
+    val_rand_sampler = RandEdgeSampler(valid["user_sequence_id"], valid["item_sequence_id"])
+    valnn_rand_sampler = RandEdgeSampler(valid_nn["user_sequence_id"], valid_nn["item_sequence_id"])
+    test_rand_sampler = RandEdgeSampler(test["user_sequence_id"], test["item_sequence_id"])
+    testnn_rand_sampler = RandEdgeSampler(test_nn["user_sequence_id"], test_nn["item_sequence_id"])
+
+    user_embeddings = torch.tensor(data.node_pos).to(device)
+    item_embeddings = torch.tensor(data.node_pos).to(device)
     item_embedding_static = Variable(torch.eye(all_node).cuda()) # one-hot vectors for static embeddings
     user_embedding_static = Variable(torch.eye(all_node).cuda()) # one-hot vectors for static embeddings 
 
@@ -116,14 +124,14 @@ for snapshot in range(args.snapshot):
     learning_rate = 1e-3
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
-    user_sequence_id = np.copy(data.edge_index[0, :])
-    item_sequence_id = np.copy(data.edge_index[1, :])
-    feature_sequence = data.edge_pos
-    user_timediffs_sequence = data.src_timedifference_sequence
-    item_timediffs_sequence = data.dest_timedifference_sequence
-    user_previous_itemid_sequence = data.src_previous_destid_sequence
-    y_true = data.y[user_sequence_id]
-    timestamp_sequence = data.edge_attr
+    user_sequence_id = np.copy(train["user_sequence_id"])
+    item_sequence_id = np.copy(train["item_sequence_id"])
+    feature_sequence = train["feature_sequence"]
+    user_timediffs_sequence = train["user_timediffs_sequence"]
+    item_timediffs_sequence = train["item_timediffs_sequence"]
+    user_previous_itemid_sequence = train["user_previous_itemid_seq"]
+    y_true = train["y_true"]
+    timestamp_sequence = train["timestamp_sequence"]
 
     # RUN THE JODIE MODEL
     print("*** Training the JODIE model for %d epochs ***" % args.epochs)
@@ -142,7 +150,7 @@ for snapshot in range(args.snapshot):
     val_reg: torch.nn.modules = None
     test_reg: torch.nn.modules = None
 
-    train_end_idx = data.num_edges
+    train_end_idx = train["item_sequence_id"].shape[0]
     score_record: list[dict[str, float]] = []
     for ep in range(args.epochs):
         recsd.epoch_record()
@@ -160,7 +168,8 @@ for snapshot in range(args.snapshot):
         tbatch_start_time = None
         tbatch_to_insert = -1
         tbatch_full = False
-
+        
+        j_interval = 0
         # TRAIN TILL THE END OF TRAINING INTERACTION IDX
         for j in range(train_end_idx):
 
@@ -168,7 +177,7 @@ for snapshot in range(args.snapshot):
                 # READ INTERACTION J
                 userid = user_sequence_id[j]
                 itemid = item_sequence_id[j]
-                feature = feature_sequence[j]
+                feature = torch.tensor(feature_sequence[j], dtype=torch.float32).to(device)
                 user_timediff = user_timediffs_sequence[j]
                 item_timediff = item_timediffs_sequence[j]
 
@@ -190,8 +199,8 @@ for snapshot in range(args.snapshot):
                 tbatch_start_time = timestamp
 
             # AFTER ALL INTERACTIONS IN THE TIMESPAN ARE CONVERTED TO T-BATCHES, FORWARD PASS TO CREATE EMBEDDING TRAJECTORIES AND CALCULATE PREDICTION LOSS
-            if timestamp - tbatch_start_time > tbatch:
-                tbatch_start_time = timestamp # RESET START TIME FOR THE NEXT TBATCHES
+            if (j - j_interval) > tbatch:
+                j_interval = j # RESET START TIME FOR THE NEXT TBATCHES
 
                 # ITERATE OVER ALL T-BATCHES
                 if not is_first_epoch:
@@ -216,7 +225,7 @@ for snapshot in range(args.snapshot):
                         lib.current_tbatches_interactionids[i] = torch.LongTensor(lib.current_tbatches_interactionids[i]).cuda()
                         temp_features = torch.concat(lib.current_tbatches_feature[i], dim=0).cuda()
                         val = temp_features.size(0)
-                        lib.current_tbatches_feature[i] = temp_features.reshape(val//args.embedding_dim, args.embedding_dim)
+                        lib.current_tbatches_feature[i] = temp_features.reshape(val//num_features, num_features)
 
 
                         lib.current_tbatches_user_timediffs[i] = torch.Tensor(lib.current_tbatches_user_timediffs[i]).cuda()
@@ -293,18 +302,46 @@ for snapshot in range(args.snapshot):
         print("Last epoch took {} minutes".format((time.time()-epoch_start_time)/60))
         # END OF ONE EPOCH 
         print("\n\nTotal loss in this epoch = %f" % (total_loss))
-        item_embeddings_dystat = torch.cat([item_embeddings, item_embedding_static], dim=1)
-        user_embeddings_dystat = torch.cat([user_embeddings, user_embedding_static], dim=1)
+        # item_embeddings_dystat = torch.cat([item_embeddings, item_embedding_static], dim=1)
+        # user_embeddings_dystat = torch.cat([user_embeddings, user_embedding_static], dim=1)
 
         # 别save model了，直接开测，node prediction任务测试比link prediction更直接一些
         if (ep+1) % epoch_interval == 0:
             model.eval()
+            # Binary validation procedure
+            val_acc, val_f1, val_roc, val_ap = eval_one_epoch(dataset=valid, model=model, sampler=val_rand_sampler, device = device, user_emb=user_embeddings, item_emb = item_embeddings)
+            nn_val_acc, nn_val_f1, nn_val_roc, nn_val_ap = eval_one_epoch(dataset=valid_nn, model=model, sampler=valnn_rand_sampler, device=device, user_emb=user_embeddings, item_emb=item_embeddings)
+            
+            t1_src_emb, t1_item_emb = torch.tensor(t1_data.edge_pos).to(device), torch.tensor(t1_data.edge_pos).to(device)
+            nn_test_acc, nn_test_f1, nn_test_roc, nn_test_ap = eval_one_epoch(dataset=test_nn, model=model, sampler=test_rand_sampler, device=device, user_emb=t1_src_emb, item_emb=t1_item_emb)
+            test_acc, test_f1, test_roc, test_ap = eval_one_epoch(dataset=test, model=model, sampler=testnn_rand_sampler, device=device, user_emb=t1_src_emb, item_emb=t1_item_emb)
 
+            score_record.append({
+                "epoch": ep + 1,
+                "val_acc": val_acc,
+                "val_f1": val_f1,
+                "val_roc": val_roc,
+                "val_ap": val_ap,
+                "nn_val_acc": nn_val_acc,
+                "nn_val_f1": nn_val_f1,
+                "nn_val_roc": nn_val_roc,
+                "nn_val_ap": nn_val_ap,
+                "nn_test_acc": nn_test_acc,
+                "nn_test_f1": nn_test_f1,
+                "nn_test_roc": nn_test_roc,
+                "nn_test_ap": nn_test_ap,
+                "test_acc": test_acc,
+                "test_f1": test_f1,
+                "test_roc": test_roc,
+                "test_ap": test_ap
+            })
+    
     # record in of data and metrics
     temporaloader.update_event(timestamp=snapshot)
     recsd.temporal_end(data.num_nodes)
     recsd.score_record(temporal_score_=score_record, node_size=data.num_nodes, temporal_idx=snapshot, epoch_interval=epoch_interval)
     snapshot_list.append(score_record)
+    
 recsd.record_end()
 recsd_score.record_end()
 recsd_score.fast_processing(snapshot_list)

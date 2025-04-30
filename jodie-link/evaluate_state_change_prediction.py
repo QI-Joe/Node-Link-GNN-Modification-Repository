@@ -145,6 +145,7 @@ with trange(train_end_idx, test_end_idx) as progress_bar:
         user_embedding_static_input = user_embeddings_static[torch.cuda.LongTensor([userid])]
         item_embedding_input = item_embeddings[torch.cuda.LongTensor([itemid])]
         item_embedding_static_input = item_embeddings_static[torch.cuda.LongTensor([itemid])]
+        
         feature_tensor = Variable(torch.Tensor(feature).cuda()).unsqueeze(0)
         user_timediffs_tensor = Variable(torch.Tensor([user_timediff]).cuda()).unsqueeze(0)
         item_timediffs_tensor = Variable(torch.Tensor([item_timediff]).cuda()).unsqueeze(0)

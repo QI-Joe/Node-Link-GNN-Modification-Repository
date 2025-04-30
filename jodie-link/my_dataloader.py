@@ -11,7 +11,7 @@ from torch import Tensor
 import copy
 import os
 from torch_geometric.loader import NeighborLoader
-from typing import Any, Union
+from typing import Any, Union, Tuple
 from multipledispatch import dispatch
 import os.path as osp
 from torch_geometric.datasets import Planetoid, CitationFull, WikiCS, Coauthor, Amazon
@@ -25,7 +25,7 @@ from sklearn.preprocessing import scale
 MOOC, Mooc_extra = "Temporal_Dataset/act-mooc/act-mooc/", ["mooc_action_features", "mooc_action_labels", "mooc_actions"]
 MATHOVERFLOW, MathOverflow_extra = "Temporal_Dataset/mathoverflow/", ["sx-mathoverflow-a2q", "sx-mathoverflow-c2a", "sx-mathoverflow-c2q", "sx-mathoverflow"]
 OVERFLOW = r"Temporal_Dataset/"
-STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow"]
+STATIC = ["mathoverflow", "dblp", "askubuntu", "stackoverflow", "mooc"]
 
 class NodeIdxMatching(object):
 
@@ -48,6 +48,8 @@ class NodeIdxMatching(object):
         else:
             if not isinstance(nodes, (np.ndarray, list, torch.Tensor)): 
                 nodes = list(nodes)
+            if len(label) > len(nodes):
+                label = np.arange(len(nodes))
             self.nodes = self.to_numpy(nodes)
             self.node: pd.DataFrame = pd.DataFrame({"node": nodes, "label": label}).reset_index()
 
@@ -105,7 +107,7 @@ class NodeIdxMatching(object):
         space_array[idx] = values
 
 
-        given_input = copy.deepcopy(src.numpy().T)
+        given_input = copy.deepcopy(src.T)
 
         col1, col2 = given_input[:, 0], given_input[:, 1]
         replace_col1 = space_array[col1]
@@ -206,7 +208,7 @@ class Temporal_Splitting(object):
         super(Temporal_Splitting, self).__init__()
         self.graph = graph 
 
-        if self.graph.edge_attr == None:
+        if self.graph.edge_attr.all() == None:
             self.graph.edge_attr = np.arange(self.graph.edge_index.size(1))
 
         self.n_id = NodeIdxMatching(False, nodes=self.graph.x, label=self.graph.y)
@@ -249,8 +251,10 @@ class Temporal_Splitting(object):
             T = [span * i / (snapshots-1) for i in range(1, snapshots)]
             if views > snapshots:
                 return "The number of sampled views exceeds the maximum value of the current policy."
-            T = random.sample(T, views)
+        T = random.sample(T, views)
         T= sorted(T)
+        if span not in T:
+            T[-1] = span
         if T[0] == float(0):
             T.pop(0)
         return T
@@ -349,13 +353,13 @@ class Temporal_Splitting(object):
             sample_time = (edge_attr <= end) # returns an bool value
 
             sampled_edges = edge_index[:, sample_time]
-            sampled_nodes = torch.unique(sampled_edges) # orignal/gobal node index
+            sampled_nodes = np.unique(sampled_edges) # orignal/gobal node index
 
             y = self.graph.y[sample_time]
-            subpos = pos[sample_time]
+            nodepos, edgepos = pos[0], pos[1][sample_time]
 
             temporal_subgraph = Temporal_Dataloader(nodes=sampled_nodes, edge_index=sampled_edges, \
-                edge_attr=edge_attr[sample_time], y=y, pos=subpos).get_Temporalgraph()
+                edge_attr=edge_attr[sample_time], y=y, pos=(nodepos, edgepos)).get_Temporalgraph()
             
             # JODIE Data format fitting and y from node-id to edge-id
             temporal_subgraph = self.edge_special_generating(graph = temporal_subgraph, temporal_idx=idx)
@@ -378,7 +382,7 @@ def time_encoding(timestamp: torch.Tensor, emb_size: int = 64):
     
     return te
 
-def position_encoding(max_len, emb_size)->torch.Tensor:
+def position_encoding(max_len, emb_size=64)->torch.Tensor:
     pe = torch.zeros(max_len, emb_size)
     position = torch.arange(0, max_len).unsqueeze(1)
 
@@ -417,6 +421,12 @@ def get_combination(labels: list[int]) -> dict:
             outer_ptr += 1
     return combination
 
+def load_mooc(path:str=None) -> Tuple[pd.DataFrame]:
+    feat = pd.read_csv(os.path.join(path, "mooc_action_features.tsv"), sep = '\t')
+    general = pd.read_csv(os.path.join(path, "mooc_actions.tsv"), sep = '\t')
+    edge_label = pd.read_csv(os.path.join(path, "mooc_action_labels.tsv"), sep = '\t')
+    return general, feat, edge_label
+
 def load_static_overflow(prefix: str, path: str=None, *wargs) -> tuple[Data, NodeIdxMatching]:
     dataset = "sx-"+prefix
     path = OVERFLOW + prefix + r"/static"
@@ -445,14 +455,40 @@ def dynamic_label(edges: pd.DataFrame, combination_dict: dict) -> pd.DataFrame:
         node_label.append((node, combination_dict[appearance]))
     return pd.DataFrame(node_label, columns=["node", "label"])
 
+def edge_load_mooc(dataset:str):
+    auto_path = r"../../TestProject/Temporal_Dataset/act-mooc/act-mooc"
+    edge, feat, label = load_mooc(auto_path)
+    # for edge, its column idx is listed as ["ACTIONID", "USERID", "TARGETID", "TIMESTAMP"]
+    edge = edge.values
+    edge_idx, src2dst, timestamp = edge[:, 0], edge[:, 1:3].T, edge[:, 3]
+    
+    print(src2dst.dtype, src2dst.shape)
+    src2dst = src2dst.astype(np.int64)
+    
+    edge_pos = feat.iloc[:, 1:].values
+    y = label.iloc[:, 1].values
+    
+    node = np.unique(src2dst).astype(np.int64)
+    max_node = int(np.max(node)) + 1
+    if dataset == "mooc":
+        node = np.unique(src2dst[0])
+    node_pos = position_encoding(max_node).numpy()
+    # edge_pos = time_encoding(timestamp)
+    
+    pos = (node_pos, edge_pos)
+    graph = Data(x = node, edge_index=src2dst, edge_attr=timestamp, y = y, pos = pos)
+    return graph
+
 def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim: int = 64, *wargs) -> tuple[Temporal_Dataloader, NodeIdxMatching]:
     """
     Now this txt file only limited to loading data in from mathoverflow datasets
     path: (path, last three words of dataset) -> (str, str) e.g. ('data/mathoverflow/sx-mathoverflow-a2q.txt', 'a2q')
     node Idx of mathoverflow is not consistent!
     """
-    if dataset == "mooc":
+    if dataset == "mooc-origin":
         edges, edge_feature = load_mooc_interact() if not path else load_mooc_interact(path)
+    elif dataset == "mooc":
+        return edge_load_mooc(dataset), None
     else: 
         raise NotImplemented("Method not implmented.")
 
@@ -477,7 +513,6 @@ def load_static_dataset(path: str = None, dataset: str = "mathoverflow", fea_dim
     :param pos -- combination of edge_feature and edge_time_feature, in shape of (num_edges, dim_edge_fea + dim_edge_time)
     """
     return graph, idxloader
-
 
 
 def load_example():
